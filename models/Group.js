@@ -12,6 +12,8 @@ const groupSchema = new mongoose.Schema(
     meetingTime: { type: String },
     status: { type: String, enum: ['Active', 'Inactive', 'Pending'], default: 'Pending' },
     totalLoans: { type: Number, default: 0 },
+    // Sum of loanAmount across individual member loans associated with this group
+    groupLoanTotal: { type: Number, default: 0 },
   },
   {
     timestamps: true,

@@ -98,6 +98,7 @@ exports.getAllClients = async (req, res) => {
     if (branchCode) filter.branchCode = branchCode;
     if (groupId) filter.group = groupId;
     const clients = await Client.find(filter).select('-picture').sort({ createdAt: -1 });
+    console.log('[Clients:getAllClients]', { filter, count: clients.length });
     res.json(clients);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -149,7 +150,9 @@ exports.deleteClient = async (req, res) => {
 
 exports.getClientsByGroup = async (req, res) => {
   try {
-    const clients = await Client.find({ group: req.params.groupId }).select('-picture').sort({ createdAt: -1 });
+    const groupId = req.params.groupId;
+    const clients = await Client.find({ group: groupId }).select('-picture').sort({ createdAt: -1 });
+    console.log('[Clients:getByGroup]', { groupId, count: clients.length });
     res.json(clients);
   } catch (err) {
     res.status(500).json({ error: err.message });

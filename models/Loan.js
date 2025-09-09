@@ -5,6 +5,7 @@ const signatorySchema = new mongoose.Schema(
     name: { type: String, required: true },
     signature: { type: String }, // Base64
     cellphoneNumber: { type: String },
+    photo: { type: String }, // Base64 image for guarantor/bondsperson/community member
   },
   { _id: false }
 );
@@ -74,6 +75,17 @@ const loanSchema = new mongoose.Schema(
     currency: { type: String, required: true, enum: ['USD', 'LRD'], default: 'LRD' },
     status: { type: String, enum: ['pending', 'active', 'paid', 'defaulted'], default: 'pending' },
 
+    // Payment plan and derived fee fields
+    paymentPlan: { type: String, enum: ['weekly', 'bi-weekly', 'monthly'] },
+    processingFeePercent: { type: Number }, // group: 3%, individual: 4%
+    processingFeeAmount: { type: Number, default: 0 },
+    formFeeAmount: { type: Number, default: 0 }, // LRD 200 for group; LRD 500 new / 400 returning for individual
+    inspectionFeeAmount: { type: Number, default: 0 },
+    collateralCashPercent: { type: Number }, // default 8%
+    collateralCashAmount: { type: Number, default: 0 },
+    netDisbursedAmount: { type: Number, default: 0 },
+    isReturningClient: { type: Boolean, default: false },
+
     // Collections
     loanOfficerName: { type: String, required: true },
     totalRealization: { type: Number, default: 0 },
@@ -90,6 +102,11 @@ const loanSchema = new mongoose.Schema(
 
     // Express collateral
     collateralItem: collateralSchema,
+
+    // Additional attachments and references
+    loanPhoto: { type: String }, // Base64 image for loan form photo (optional)
+    communityMemberInfo: signatorySchema, // For individual loan reference
+    spouseName: { type: String }, // For individual loans if applicable
   },
   { timestamps: true }
 );
@@ -135,8 +152,12 @@ loanSchema.pre('validate', function (next) {
 
   if (this.loanType === 'individual') {
     if (!this.client) this.invalidate('client', 'Client is required for individual loans');
-    if (!this.guarantors || this.guarantors.length < 2) {
-      this.invalidate('guarantors', 'Two guarantors are required for individual loans');
+    // For group-member individual loans, guarantors are optional.
+    // Only enforce 2 guarantors when the loan is not associated with a group.
+    if (!this.group) {
+      if (!this.guarantors || this.guarantors.length < 2) {
+        this.invalidate('guarantors', 'Two guarantors are required for individual loans');
+      }
     }
   }
 
@@ -151,6 +172,54 @@ loanSchema.pre('validate', function (next) {
   if (!this.endingDate && this.disbursementDate && this.loanDurationNumber && this.loanDurationUnit) {
     this.endingDate = addDuration(this.disbursementDate, this.loanDurationNumber, this.loanDurationUnit);
   }
+
+  // Defaults for payment plan and fee-related fields
+  // Payment plan must be provided for group/individual loans per new requirements
+  if ((this.loanType === 'group' || this.loanType === 'individual') && !this.paymentPlan) {
+    this.invalidate('paymentPlan', 'paymentPlan is required for group and individual loans');
+  }
+
+  // Default processing fee percent
+  if (this.processingFeePercent == null) {
+    if (this.loanType === 'group') this.processingFeePercent = 3;
+    if (this.loanType === 'individual') this.processingFeePercent = this.group ? 3 : 4;
+  }
+
+  // Default collateral cash percent
+  if (this.collateralCashPercent == null && (this.loanType === 'group' || this.loanType === 'individual')) {
+    this.collateralCashPercent = 8;
+  }
+
+  // Default form fee amount if not provided
+  if ((this.loanType === 'group' || this.loanType === 'individual') && (this.formFeeAmount == null)) {
+    if (this.loanType === 'group') {
+      // Form fee LRD 200 for group loans when currency is LRD
+      this.formFeeAmount = this.currency === 'LRD' ? 200 : 0;
+    } else if (this.loanType === 'individual') {
+      // If linked to group, use group form fee; otherwise individual new/returning
+      if (this.group) {
+        this.formFeeAmount = this.currency === 'LRD' ? 200 : 0;
+      } else {
+        const returning = !!this.isReturningClient;
+        this.formFeeAmount = this.currency === 'LRD' ? (returning ? 400 : 500) : 0;
+      }
+    }
+  }
+
+  // Compute derived amounts
+  const amt = Number(this.loanAmount || 0);
+  const procPct = Number(this.processingFeePercent || 0);
+  const procAmt = Number((amt * (procPct / 100)).toFixed(2));
+  this.processingFeeAmount = isNaN(procAmt) ? 0 : procAmt;
+
+  const collateralPct = Number(this.collateralCashPercent || 0);
+  const collateralAmt = Number((amt * (collateralPct / 100)).toFixed(2));
+  this.collateralCashAmount = isNaN(collateralAmt) ? 0 : collateralAmt;
+
+  const inspection = Number(this.inspectionFeeAmount || 0);
+  const formFee = Number(this.formFeeAmount || 0);
+  const net = Number((amt - (this.processingFeeAmount || 0) - formFee - inspection).toFixed(2));
+  this.netDisbursedAmount = isNaN(net) ? 0 : net;
 
   next();
 });

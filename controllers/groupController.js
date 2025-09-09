@@ -16,6 +16,7 @@ exports.getAllGroups = async (req, res) => {
     if (branchName) filter.branchName = branchName;
     if (branchCode) filter.branchCode = branchCode;
     const groups = await Group.find(filter).populate('clients').sort({ createdAt: -1 });
+    console.log('[Groups:getAllGroups]', { filter, count: groups.length });
     res.json(groups);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -24,8 +25,10 @@ exports.getAllGroups = async (req, res) => {
 
 exports.getGroupById = async (req, res) => {
   try {
-    const group = await Group.findById(req.params.id).populate('clients');
+    const id = req.params.id;
+    const group = await Group.findById(id).populate('clients');
     if (!group) return res.status(404).json({ error: 'Group not found' });
+    console.log('[Groups:getById]', { id, memberCount: group.clients?.length || 0 });
     res.json(group);
   } catch (err) {
     res.status(500).json({ error: err.message });

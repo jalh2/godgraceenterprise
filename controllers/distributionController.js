@@ -10,11 +10,21 @@ exports.createDistribution = async (req, res) => {
     // Single or batch via entries: []
     const { entries } = req.body;
     if (Array.isArray(entries) && entries.length > 0) {
+      // Access control: must own the loan if restricted
+      const loan = await Loan.findById(loanId);
+      if (!loan) return res.status(404).json({ error: 'Loan not found' });
+      const user = req.userDoc;
+      const role = (user && user.role ? String(user.role).toLowerCase() : '');
+      const restricted = role === 'loan officer' || role === 'field agent';
+      if (restricted && user) {
+        const own = (loan.createdByEmail && loan.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (loan.loanOfficerName === user.username);
+        if (!own) return res.status(403).json({ error: 'Forbidden' });
+      }
       const docs = entries.map((e) => ({ ...e, loan: loanId }));
       const saved = await Distribution.insertMany(docs);
 
       // Metrics: loanAmountDistributed (+), waitingToBeCollected (+)
-      const loan = await Loan.findById(loanId);
+      // loan already fetched
       const events = saved.flatMap((d) => {
         const base = {
           date: d.date || new Date(),
@@ -38,10 +48,20 @@ exports.createDistribution = async (req, res) => {
     }
 
     const payload = { ...req.body, loan: loanId };
+    // Access control: must own the loan if restricted
+    const loan = await Loan.findById(loanId);
+    if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      const own = (loan.createdByEmail && loan.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (loan.loanOfficerName === user.username);
+      if (!own) return res.status(403).json({ error: 'Forbidden' });
+    }
     const distribution = await Distribution.create(payload);
 
     // Metrics for single record
-    const loan = await Loan.findById(loanId);
+    // loan already fetched
     await recordMany([
       {
         metric: 'loanAmountDistributed',
@@ -81,6 +101,16 @@ exports.getDistributionsByLoan = async (req, res) => {
   try {
     const loanId = req.params.id || req.params.loanId || req.query.loan;
     if (!loanId) return res.status(400).json({ error: 'loan id is required' });
+    // Access control: must own the loan if restricted
+    const loan = await Loan.findById(loanId);
+    if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      const own = (loan.createdByEmail && loan.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (loan.loanOfficerName === user.username);
+      if (!own) return res.status(403).json({ error: 'Forbidden' });
+    }
     const list = await Distribution.find({ loan: loanId }).populate('group member loan').sort({ createdAt: -1 });
     res.json(list);
   } catch (err) {
@@ -94,6 +124,13 @@ exports.getAllDistributions = async (req, res) => {
     const filter = {};
     if (branchName) filter.branchName = branchName;
     if (branchCode) filter.branchCode = branchCode;
+    // Restrict to user's branch for restricted roles
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      if (!filter.branchCode) filter.branchCode = user.branchCode;
+    }
     const list = await Distribution.find(filter).populate('group member loan').sort({ createdAt: -1 });
     res.json(list);
   } catch (err) {
@@ -104,6 +141,17 @@ exports.getAllDistributions = async (req, res) => {
 exports.updateDistribution = async (req, res) => {
   try {
     const before = await Distribution.findById(req.params.id);
+    if (!before) return res.status(404).json({ error: 'Distribution not found' });
+    // Access control: must own the loan if restricted
+    const loan = await Loan.findById(before.loan);
+    if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      const own = (loan.createdByEmail && loan.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (loan.loanOfficerName === user.username);
+      if (!own) return res.status(403).json({ error: 'Forbidden' });
+    }
     const updated = await Distribution.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
       runValidators: true,
@@ -147,6 +195,18 @@ exports.updateDistribution = async (req, res) => {
 
 exports.deleteDistribution = async (req, res) => {
   try {
+    const existing = await Distribution.findById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Distribution not found' });
+    // Access control: must own the loan if restricted
+    const loan = await Loan.findById(existing.loan);
+    if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      const own = (loan.createdByEmail && loan.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (loan.loanOfficerName === user.username);
+      if (!own) return res.status(403).json({ error: 'Forbidden' });
+    }
     const deleted = await Distribution.findByIdAndDelete(req.params.id);
     if (!deleted) return res.status(404).json({ error: 'Distribution not found' });
 

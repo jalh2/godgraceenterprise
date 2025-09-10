@@ -6,6 +6,7 @@ const groupSchema = new mongoose.Schema(
     groupCode: { type: String, required: true, unique: true },
     branchName: { type: String, required: true },
     branchCode: { type: String, required: true },
+    createdByEmail: { type: String, index: true },
     clients: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Client' }],
     loanOfficer: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     meetingDay: { type: String },

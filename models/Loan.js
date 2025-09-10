@@ -38,6 +38,7 @@ const loanSchema = new mongoose.Schema(
     // Categorization
     branchName: { type: String, required: true },
     branchCode: { type: String, required: true },
+    createdByEmail: { type: String, index: true },
     loanType: { type: String, enum: ['express', 'group', 'individual'], required: true },
 
     // Relations

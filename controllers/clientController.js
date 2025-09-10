@@ -30,6 +30,15 @@ exports.createClient = async (req, res) => {
       }
       groupDoc = await Group.findById(group);
       if (!groupDoc) return res.status(404).json({ error: 'Group not found' });
+      // Restricted users must own the group
+      const user = req.userDoc;
+      const role = (user && user.role ? String(user.role).toLowerCase() : '');
+      const restricted = role === 'loan officer' || role === 'field agent';
+      if (restricted && user) {
+        if (!groupDoc.createdByEmail || groupDoc.createdByEmail.toLowerCase() !== String(user.email).toLowerCase()) {
+          return res.status(403).json({ error: 'Forbidden: you do not own this group' });
+        }
+      }
     }
 
     // Generate a unique passbook number with retry on duplicate
@@ -43,7 +52,10 @@ exports.createClient = async (req, res) => {
       const generatedPassBookNumber = `PB-${String(counter.seq).padStart(6, '0')}`;
 
       try {
-        client = await Client.create({
+        const user = req.userDoc;
+        const role = (user && user.role ? String(user.role).toLowerCase() : '');
+        const restricted = role === 'loan officer' || role === 'field agent';
+        const payload = {
           passBookNumber: generatedPassBookNumber,
           branchName,
           branchCode,
@@ -59,7 +71,13 @@ exports.createClient = async (req, res) => {
           nationalId,
           memberSignature,
           group: groupDoc ? groupDoc._id : undefined,
-        });
+        };
+        if (user && user.email) payload.createdByEmail = user.email;
+        if (restricted && user) {
+          payload.branchName = user.branchName;
+          payload.branchCode = user.branchCode;
+        }
+        client = await Client.create(payload);
         break; // success
       } catch (e) {
         if (e && e.code === 11000 && /passBookNumber/i.test(e.message || '')) {
@@ -97,6 +115,13 @@ exports.getAllClients = async (req, res) => {
     if (branchName) filter.branchName = branchName;
     if (branchCode) filter.branchCode = branchCode;
     if (groupId) filter.group = groupId;
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      filter.createdByEmail = user.email;
+      if (!branchCode) filter.branchCode = user.branchCode;
+    }
     const clients = await Client.find(filter).select('-picture').sort({ createdAt: -1 });
     console.log('[Clients:getAllClients]', { filter, count: clients.length });
     res.json(clients);
@@ -109,6 +134,14 @@ exports.getClientById = async (req, res) => {
   try {
     const client = await Client.findById(req.params.id).select('-picture').populate('group');
     if (!client) return res.status(404).json({ error: 'Client not found' });
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      if (!client.createdByEmail || client.createdByEmail.toLowerCase() !== String(user.email).toLowerCase()) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
     res.json(client);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -130,6 +163,19 @@ exports.updateClient = async (req, res) => {
         return res.status(400).json({ error: 'Invalid group id' });
       }
     }
+    const existing = await Client.findById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Client not found' });
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      if (!existing.createdByEmail || existing.createdByEmail.toLowerCase() !== String(user.email).toLowerCase()) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+      updateData.branchName = user.branchName;
+      updateData.branchCode = user.branchCode;
+      updateData.createdByEmail = user.email;
+    }
     const client = await Client.findByIdAndUpdate(req.params.id, updateData, { new: true });
     if (!client) return res.status(404).json({ error: 'Client not found' });
     res.json(client);
@@ -140,6 +186,16 @@ exports.updateClient = async (req, res) => {
 
 exports.deleteClient = async (req, res) => {
   try {
+    const existing = await Client.findById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Client not found' });
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      if (!existing.createdByEmail || existing.createdByEmail.toLowerCase() !== String(user.email).toLowerCase()) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
     const client = await Client.findByIdAndDelete(req.params.id);
     if (!client) return res.status(404).json({ error: 'Client not found' });
     res.json({ message: 'Client deleted' });
@@ -151,6 +207,20 @@ exports.deleteClient = async (req, res) => {
 exports.getClientsByGroup = async (req, res) => {
   try {
     const groupId = req.params.groupId;
+    // Access control: ensure restricted users own the group and only see their registered clients
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      const g = await Group.findById(groupId);
+      if (!g) return res.status(404).json({ error: 'Group not found' });
+      if (!g.createdByEmail || g.createdByEmail.toLowerCase() !== String(user.email).toLowerCase()) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+      const clients = await Client.find({ group: groupId, createdByEmail: user.email }).select('-picture').sort({ createdAt: -1 });
+      console.log('[Clients:getByGroup]', { groupId, count: clients.length });
+      return res.json(clients);
+    }
     const clients = await Client.find({ group: groupId }).select('-picture').sort({ createdAt: -1 });
     console.log('[Clients:getByGroup]', { groupId, count: clients.length });
     res.json(clients);

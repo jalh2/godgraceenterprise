@@ -7,6 +7,7 @@ const clientSchema = new mongoose.Schema(
     branchCode: { type: String, required: true },
     groupName: { type: String},
     groupCode: { type: String},
+    createdByEmail: { type: String, index: true },
     memberName: { type: String, required: true },
     picture: { type: String }, // Base64 image data (you can store as Data URI or raw base64)
     memberAge: { type: Number, required: true },

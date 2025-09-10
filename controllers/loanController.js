@@ -72,6 +72,16 @@ exports.createLoan = async (req, res) => {
   try {
     const { clean, error } = sanitizeLoanPayload(req.body);
     if (error) return res.status(400).json({ error });
+    // Attach creator identity and enforce branch/officer for restricted roles
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (user && user.email) clean.createdByEmail = user.email;
+    if (restricted && user) {
+      clean.branchName = user.branchName;
+      clean.branchCode = user.branchCode;
+      clean.loanOfficerName = user.username;
+    }
     const loan = await Loan.create(clean);
     // Recalculate group total if applicable
     if (loan && loan.loanType === 'individual' && loan.group) {
@@ -117,6 +127,19 @@ exports.getAllLoans = async (req, res) => {
     if (status) filter.status = status;
     if (group) filter.group = group;
 
+    // Restrict to creator/officer for loan officer and field agent
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      filter.$or = [
+        { createdByEmail: user.email },
+        { loanOfficerName: user.username },
+      ];
+      // Default to user's branch if no explicit filter provided
+      if (!branchCode) filter.branchCode = user.branchCode;
+    }
+
     const loans = await Loan.find(filter)
       .populate('group clients client')
       .sort({ createdAt: -1 });
@@ -131,6 +154,14 @@ exports.getLoanById = async (req, res) => {
   try {
     const loan = await Loan.findById(req.params.id).populate('group clients client');
     if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    // Access control
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      const own = (loan.createdByEmail && loan.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (loan.loanOfficerName === user.username);
+      if (!own) return res.status(403).json({ error: 'Forbidden' });
+    }
     res.json(loan);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -142,6 +173,23 @@ exports.updateLoan = async (req, res) => {
     const before = await Loan.findById(req.params.id);
     const { clean, error } = sanitizeLoanPayload(req.body);
     if (error) return res.status(400).json({ error });
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      // Must own the loan
+      if (!before) return res.status(404).json({ error: 'Loan not found' });
+      const own = (before.createdByEmail && before.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (before.loanOfficerName === user.username);
+      if (!own) return res.status(403).json({ error: 'Forbidden' });
+      // Enforce branch/officer identity
+      clean.branchName = user.branchName;
+      clean.branchCode = user.branchCode;
+      clean.loanOfficerName = user.username;
+      clean.createdByEmail = user.email;
+    } else if (user && user.email) {
+      // Preserve creator if not set
+      if (!clean.createdByEmail) clean.createdByEmail = user.email;
+    }
     const loan = await Loan.findByIdAndUpdate(req.params.id, clean, { new: true, runValidators: true });
     if (!loan) return res.status(404).json({ error: 'Loan not found' });
     // Recalculate group totals if relevant loan changed
@@ -161,6 +209,16 @@ exports.updateLoan = async (req, res) => {
 
 exports.deleteLoan = async (req, res) => {
   try {
+    // Access control
+    const existing = await Loan.findById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Loan not found' });
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      const own = (existing.createdByEmail && existing.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (existing.loanOfficerName === user.username);
+      if (!own) return res.status(403).json({ error: 'Forbidden' });
+    }
     const loan = await Loan.findByIdAndDelete(req.params.id);
     if (!loan) return res.status(404).json({ error: 'Loan not found' });
     if (loan.loanType === 'individual' && loan.group) {
@@ -176,6 +234,14 @@ exports.addCollection = async (req, res) => {
   try {
     const loan = await Loan.findById(req.params.id);
     if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    // Access control
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      const own = (loan.createdByEmail && loan.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (loan.loanOfficerName === user.username);
+      if (!own) return res.status(403).json({ error: 'Forbidden' });
+    }
 
     const record = {
       memberName: req.body.memberName,
@@ -231,6 +297,14 @@ exports.addCollectionsBatch = async (req, res) => {
 
     const loan = await Loan.findById(req.params.id);
     if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    // Access control
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      const own = (loan.createdByEmail && loan.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (loan.loanOfficerName === user.username);
+      if (!own) return res.status(403).json({ error: 'Forbidden' });
+    }
 
     let totalAdd = 0;
     for (const entry of entries) {
@@ -291,6 +365,16 @@ exports.setLoanStatus = async (req, res) => {
     const allowed = ['pending', 'active', 'paid', 'defaulted'];
     const { status } = req.body;
     if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
+    // Access control: must own loan for restricted roles
+    const current = await Loan.findById(req.params.id);
+    if (!current) return res.status(404).json({ error: 'Loan not found' });
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      const own = (current.createdByEmail && current.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (current.loanOfficerName === user.username);
+      if (!own) return res.status(403).json({ error: 'Forbidden' });
+    }
     const loan = await Loan.findByIdAndUpdate(
       req.params.id,
       { status },
@@ -370,6 +454,19 @@ exports.getLoansByGroup = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(groupId)) {
       return res.status(400).json({ error: 'Invalid group id' });
     }
+    // Access control: ensure user owns the group when restricted
+    try {
+      const g = await Group.findById(groupId);
+      if (!g) return res.status(404).json({ error: 'Group not found' });
+      const user = req.userDoc;
+      const role = (user && user.role ? String(user.role).toLowerCase() : '');
+      const restricted = role === 'loan officer' || role === 'field agent';
+      if (restricted && user) {
+        if (!g.createdByEmail || g.createdByEmail.toLowerCase() !== String(user.email).toLowerCase()) {
+          return res.status(403).json({ error: 'Forbidden' });
+        }
+      }
+    } catch (e) {}
     const { loanType, status } = req.query;
     const filter = { group: groupId };
     if (loanType) filter.loanType = loanType;

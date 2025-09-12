@@ -1,40 +1,89 @@
 const Distribution = require('../models/Distribution');
 const Loan = require('../models/Loan');
 const { recordMany } = require('../utils/metrics');
+const mongoose = require('mongoose');
 
 exports.createDistribution = async (req, res) => {
   try {
-    const loanId = req.params.id || req.body.loan; // support nested and top-level
-    if (!loanId) return res.status(400).json({ error: 'loan id is required' });
+    const id = req.params.id || req.body.loan;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: 'Invalid or missing loan id' });
+    }
 
-    // Single or batch via entries: []
-    const { entries } = req.body;
-    if (Array.isArray(entries) && entries.length > 0) {
-      // Access control: must own the loan if restricted
-      const loan = await Loan.findById(loanId);
-      if (!loan) return res.status(404).json({ error: 'Loan not found' });
-      const user = req.userDoc;
-      const role = (user && user.role ? String(user.role).toLowerCase() : '');
-      const restricted = role === 'loan officer' || role === 'field agent';
-      if (restricted && user) {
-        const own = (loan.createdByEmail && loan.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (loan.loanOfficerName === user.username);
-        if (!own) return res.status(403).json({ error: 'Forbidden' });
+    // Load loan and validate
+    const loan = await Loan.findById(id).select('group currency status branchName branchCode client loanOfficerName');
+    if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    if (loan.status !== 'active') {
+      return res.status(400).json({ error: 'Cannot record distribution for a loan that is not active' });
+    }
+
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const allowedRoles = ['admin', 'branch head'];
+    if (!allowedRoles.includes(role)) {
+      return res.status(403).json({ error: 'Only admins and branch heads can distribute loans' });
+    }
+
+    // Normalize a single entry against the loan
+    const normalize = (entry) => {
+      const amount = Number(entry.amount || 0);
+      if (!(amount > 0)) throw new Error('amount must be greater than 0');
+
+      // Enforce loan currency
+      const payloadCurrency = entry.currency ? String(entry.currency) : loan.currency;
+      if (payloadCurrency !== loan.currency) {
+        throw new Error(`Distribution currency ${payloadCurrency} does not match loan currency ${loan.currency}`);
       }
-      const docs = entries.map((e) => ({ ...e, loan: loanId }));
-      const saved = await Distribution.insertMany(docs);
 
-      // Metrics: loanAmountDistributed (+), waitingToBeCollected (+)
-      // loan already fetched
-      const events = saved.flatMap((d) => {
+      // If the loan has a borrower, restrict distribution to that borrower
+      let memberId = undefined;
+      let memberName = undefined;
+      if (loan.client) {
+        memberId = loan.client;
+        memberName = entry.memberName || '';
+      } else {
+        memberId = (entry.member && mongoose.Types.ObjectId.isValid(entry.member)) ? entry.member : undefined;
+        memberName = entry.memberName || (entry.memberName === '' ? '' : undefined);
+      }
+
+      return {
+        loan: id,
+        group: loan.group,
+        member: memberId,
+        memberName,
+        amount,
+        currency: payloadCurrency,
+        date: entry.date ? new Date(entry.date) : new Date(),
+        notes: entry.notes || '',
+        // Derive branch from loan to ensure consistency
+        branchName: loan.branchName,
+        branchCode: loan.branchCode,
+      };
+    };
+
+    const { entries } = req.body || {};
+    let created;
+    if (Array.isArray(entries) && entries.length > 0) {
+      const docs = entries.map(normalize);
+      created = await Distribution.insertMany(docs);
+    } else {
+      const payload = normalize(req.body || {});
+      created = await Distribution.create(payload);
+    }
+
+    // Record metrics for all created entries
+    try {
+      const arr = Array.isArray(created) ? created : [created];
+      const events = arr.flatMap((d) => {
         const base = {
           date: d.date || new Date(),
-          branchName: d.branchName,
-          branchCode: d.branchCode,
-          loanOfficerName: loan ? loan.loanOfficerName : undefined,
-          currency: d.currency,
-          loan: loanId,
-          group: d.group,
-          client: d.member,
+          branchName: loan.branchName,
+          branchCode: loan.branchCode,
+          loanOfficerName: loan.loanOfficerName,
+          currency: loan.currency,
+          loan: id,
+          group: loan.group,
+          client: loan.client,
           extra: { distribution: d._id },
         };
         return [
@@ -42,56 +91,16 @@ exports.createDistribution = async (req, res) => {
           { ...base, metric: 'waitingToBeCollected', value: Number(d.amount || 0) },
         ];
       });
-      await recordMany(events);
-
-      return res.status(201).json(saved);
+      if (events.length) await recordMany(events);
+    } catch (mErr) {
+      console.error('[Metrics:createDistribution] failed:', mErr.message);
     }
 
-    const payload = { ...req.body, loan: loanId };
-    // Access control: must own the loan if restricted
-    const loan = await Loan.findById(loanId);
-    if (!loan) return res.status(404).json({ error: 'Loan not found' });
-    const user = req.userDoc;
-    const role = (user && user.role ? String(user.role).toLowerCase() : '');
-    const restricted = role === 'loan officer' || role === 'field agent';
-    if (restricted && user) {
-      const own = (loan.createdByEmail && loan.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (loan.loanOfficerName === user.username);
-      if (!own) return res.status(403).json({ error: 'Forbidden' });
-    }
-    const distribution = await Distribution.create(payload);
-
-    // Metrics for single record
-    // loan already fetched
-    await recordMany([
-      {
-        metric: 'loanAmountDistributed',
-        value: Number(distribution.amount || 0),
-        date: distribution.date || new Date(),
-        branchName: distribution.branchName,
-        branchCode: distribution.branchCode,
-        loanOfficerName: loan ? loan.loanOfficerName : undefined,
-        currency: distribution.currency,
-        loan: loanId,
-        group: distribution.group,
-        client: distribution.member,
-        extra: { distribution: distribution._id },
-      },
-      {
-        metric: 'waitingToBeCollected',
-        value: Number(distribution.amount || 0),
-        date: distribution.date || new Date(),
-        branchName: distribution.branchName,
-        branchCode: distribution.branchCode,
-        loanOfficerName: loan ? loan.loanOfficerName : undefined,
-        currency: distribution.currency,
-        loan: loanId,
-        group: distribution.group,
-        client: distribution.member,
-        extra: { distribution: distribution._id },
-      },
-    ]);
-
-    res.status(201).json(distribution);
+    // Return refreshed list for this loan
+    const distributions = await Distribution.find({ loan: id })
+      .populate('member', 'memberName')
+      .sort({ date: -1, createdAt: -1 });
+    return res.status(201).json(distributions);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -100,7 +109,9 @@ exports.createDistribution = async (req, res) => {
 exports.getDistributionsByLoan = async (req, res) => {
   try {
     const loanId = req.params.id || req.params.loanId || req.query.loan;
-    if (!loanId) return res.status(400).json({ error: 'loan id is required' });
+    if (!loanId || !mongoose.Types.ObjectId.isValid(loanId)) {
+      return res.status(400).json({ error: 'Invalid or missing loan id' });
+    }
     // Access control: must own the loan if restricted
     const loan = await Loan.findById(loanId);
     if (!loan) return res.status(404).json({ error: 'Loan not found' });
@@ -111,7 +122,9 @@ exports.getDistributionsByLoan = async (req, res) => {
       const own = (loan.createdByEmail && loan.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (loan.loanOfficerName === user.username);
       if (!own) return res.status(403).json({ error: 'Forbidden' });
     }
-    const list = await Distribution.find({ loan: loanId }).populate('group member loan').sort({ createdAt: -1 });
+    const list = await Distribution.find({ loan: loanId })
+      .populate('group member loan')
+      .sort({ date: -1, createdAt: -1 });
     res.json(list);
   } catch (err) {
     res.status(500).json({ error: err.message });

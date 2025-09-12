@@ -243,16 +243,51 @@ exports.addCollection = async (req, res) => {
       if (!own) return res.status(403).json({ error: 'Forbidden' });
     }
 
+    // Compute defaults similar to OpportunityMicrofinance
+    const toWeeks = (n, unit) => {
+      const num = Number(n || 0);
+      switch ((unit || '').toLowerCase()) {
+        case 'days': return Math.max(Math.ceil(num / 7), 0);
+        case 'weeks': return Math.max(num, 0);
+        case 'months': return Math.max(num * 4, 0);
+        case 'years': return Math.max(num * 52, 0);
+        default: return Math.max(num, 0);
+      }
+    };
+    const weeks = toWeeks(loan.loanDurationNumber, loan.loanDurationUnit);
+    const expectedWeekly = Number(loan.weeklyInstallment || 0) || (weeks > 0 ? (Number(loan.loanAmount || 0) * (1 + Number(loan.interestRate || 0) / 100)) / weeks : 0);
+
+    // Normalize incoming
+    const currency = req.body.currency || loan.currency;
+    if (currency !== loan.currency) {
+      return res.status(400).json({ error: `Collection currency ${currency} does not match loan currency ${loan.currency}` });
+    }
+    const weeklyAmount = Number(req.body.weeklyAmount || expectedWeekly);
+    const fieldCollection = Number(req.body.fieldCollection || 0);
+    const advancePayment = Number(req.body.advancePayment || 0);
+    const fieldBalance = (req.body.fieldBalance == null)
+      ? Math.max(Number(weeklyAmount || 0) - fieldCollection - advancePayment, 0)
+      : Number(req.body.fieldBalance);
+    const memberName = req.body.memberName || (loan.client ? undefined : '');
+
     const record = {
-      memberName: req.body.memberName,
-      loanAmount: req.body.loanAmount,
-      weeklyAmount: req.body.weeklyAmount,
-      fieldCollection: req.body.fieldCollection,
-      advancePayment: req.body.advancePayment || 0,
-      fieldBalance: req.body.fieldBalance,
-      currency: req.body.currency || loan.currency,
+      memberName: memberName || (req.body.memberName || ''),
+      loanAmount: Number(req.body.loanAmount || weeklyAmount),
+      weeklyAmount,
+      fieldCollection,
+      advancePayment,
+      fieldBalance,
+      currency,
       collectionDate: req.body.collectionDate || new Date(),
     };
+    // If per-client loan and memberName missing, try to populate from client
+    if (!record.memberName && loan.client) {
+      try {
+        const Client = require('../models/Client');
+        const c = await Client.findById(loan.client).select('memberName');
+        if (c && c.memberName) record.memberName = c.memberName;
+      } catch (_) {}
+    }
 
     loan.collections.push(record);
     loan.totalRealization = Number(loan.totalRealization || 0) + Number(record.fieldCollection || 0);
@@ -306,16 +341,40 @@ exports.addCollectionsBatch = async (req, res) => {
       if (!own) return res.status(403).json({ error: 'Forbidden' });
     }
 
+    // Defaults
+    const toWeeks = (n, unit) => {
+      const num = Number(n || 0);
+      switch ((unit || '').toLowerCase()) {
+        case 'days': return Math.max(Math.ceil(num / 7), 0);
+        case 'weeks': return Math.max(num, 0);
+        case 'months': return Math.max(num * 4, 0);
+        case 'years': return Math.max(num * 52, 0);
+        default: return Math.max(num, 0);
+      }
+    };
+    const weeks = toWeeks(loan.loanDurationNumber, loan.loanDurationUnit);
+    const expectedWeekly = Number(loan.weeklyInstallment || 0) || (weeks > 0 ? (Number(loan.loanAmount || 0) * (1 + Number(loan.interestRate || 0) / 100)) / weeks : 0);
+
     let totalAdd = 0;
     for (const entry of entries) {
+      const currency = entry.currency || loan.currency;
+      if (currency !== loan.currency) {
+        return res.status(400).json({ error: `Collection currency ${currency} does not match loan currency ${loan.currency}` });
+      }
+      const weeklyAmount = Number(entry.weeklyAmount || expectedWeekly);
+      const fieldCollection = Number(entry.fieldCollection || 0);
+      const advancePayment = Number(entry.advancePayment || 0);
+      const fieldBalance = (entry.fieldBalance == null)
+        ? Math.max(Number(weeklyAmount || 0) - fieldCollection - advancePayment, 0)
+        : Number(entry.fieldBalance);
       const rec = {
-        memberName: entry.memberName,
-        loanAmount: entry.loanAmount,
-        weeklyAmount: entry.weeklyAmount,
-        fieldCollection: entry.fieldCollection,
-        advancePayment: entry.advancePayment || 0,
-        fieldBalance: entry.fieldBalance,
-        currency: entry.currency || loan.currency,
+        memberName: entry.memberName || '',
+        loanAmount: Number(entry.loanAmount || weeklyAmount),
+        weeklyAmount,
+        fieldCollection,
+        advancePayment,
+        fieldBalance,
+        currency,
         collectionDate: entry.collectionDate || new Date(),
       };
       loan.collections.push(rec);
@@ -375,9 +434,44 @@ exports.setLoanStatus = async (req, res) => {
       const own = (current.createdByEmail && current.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (current.loanOfficerName === user.username);
       if (!own) return res.status(403).json({ error: 'Forbidden' });
     }
+    // Only admin/branch head can approve (activate) loans
+    if (status === 'active') {
+      const roleForApprove = (user && user.role ? String(user.role).toLowerCase() : '');
+      const approvers = ['admin', 'branch head'];
+      if (!approvers.includes(roleForApprove)) {
+        return res.status(403).json({ error: 'Only admins and branch heads can approve loans' });
+      }
+    }
+
+    // Helper: convert loan duration to weeks (approximate months=4 weeks, years=52 weeks)
+    const toWeeks = (n, unit) => {
+      const num = Number(n || 0);
+      switch ((unit || '').toLowerCase()) {
+        case 'days': return Math.max(Math.ceil(num / 7), 0);
+        case 'weeks': return Math.max(num, 0);
+        case 'months': return Math.max(num * 4, 0);
+        case 'years': return Math.max(num * 52, 0);
+        default: return Math.max(num, 0);
+      }
+    };
+
+    // Prepare update doc and compute weekly installment on activation
+    const update = { status };
+    const prevStatus = current.status;
+    if (prevStatus !== 'active' && status === 'active') {
+      // If disbursementDate missing, set to now to align future metrics
+      if (!current.disbursementDate) update.disbursementDate = new Date();
+      const weeks = toWeeks(current.loanDurationNumber, current.loanDurationUnit);
+      if (weeks > 0 && Number.isFinite(current.loanAmount)) {
+        const ratePct = Number(current.interestRate || 0);
+        const totalRepayable = Number(current.loanAmount) * (1 + (ratePct / 100));
+        const weekly = totalRepayable / weeks; // per-loan weekly installment
+        update.weeklyInstallment = Math.round(weekly * 100) / 100;
+      }
+    }
     const loan = await Loan.findByIdAndUpdate(
       req.params.id,
-      { status },
+      update,
       { new: true, runValidators: true }
     );
     if (!loan) return res.status(404).json({ error: 'Loan not found' });

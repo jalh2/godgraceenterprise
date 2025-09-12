@@ -243,7 +243,7 @@ exports.addCollection = async (req, res) => {
       if (!own) return res.status(403).json({ error: 'Forbidden' });
     }
 
-    // Compute defaults similar to OpportunityMicrofinance
+    // Compute defaults based on payment plan (weekly/bi-weekly/monthly)
     const toWeeks = (n, unit) => {
       const num = Number(n || 0);
       switch ((unit || '').toLowerCase()) {
@@ -254,8 +254,40 @@ exports.addCollection = async (req, res) => {
         default: return Math.max(num, 0);
       }
     };
-    const weeks = toWeeks(loan.loanDurationNumber, loan.loanDurationUnit);
-    const expectedWeekly = Number(loan.weeklyInstallment || 0) || (weeks > 0 ? (Number(loan.loanAmount || 0) * (1 + Number(loan.interestRate || 0) / 100)) / weeks : 0);
+    const plan = String(loan.paymentPlan || 'weekly').toLowerCase();
+    const totalWithInterest = Number(loan.loanAmount || 0) * (1 + Number(loan.interestRate || 0) / 100);
+    const calcPeriods = () => {
+      const start = loan.disbursementDate ? new Date(loan.disbursementDate) : null;
+      const end = loan.endingDate ? new Date(loan.endingDate) : null;
+      if (start && end && !isNaN(start) && !isNaN(end)) {
+        let i = 0;
+        let current = new Date(start);
+        while (current <= end && i < 500) {
+          if (plan === 'weekly') current.setDate(current.getDate() + 7);
+          else if (plan === 'bi-weekly') current.setDate(current.getDate() + 14);
+          else current.setMonth(current.getMonth() + 1);
+          i += 1;
+        }
+        return i;
+      }
+      const weeks = toWeeks(loan.loanDurationNumber, loan.loanDurationUnit);
+      if (plan === 'weekly') return weeks;
+      if (plan === 'bi-weekly') return Math.max(Math.ceil(weeks / 2), 0);
+      // monthly fallback using approximate months from duration
+      const n = Number(loan.loanDurationNumber || 0);
+      const unit = String(loan.loanDurationUnit || 'weeks').toLowerCase();
+      let months = 0;
+      switch (unit) {
+        case 'days': months = Math.max(Math.ceil(n / 30), 0); break;
+        case 'weeks': months = Math.max(Math.ceil(weeks / 4), 0); break;
+        case 'months': months = Math.max(n, 0); break;
+        case 'years': months = Math.max(n * 12, 0); break;
+        default: months = Math.max(n, 0); break;
+      }
+      return months;
+    };
+    const periods = Math.max(calcPeriods(), 1);
+    const expectedWeekly = periods > 0 ? (totalWithInterest / periods) : 0;
 
     // Normalize incoming
     const currency = req.body.currency || loan.currency;
@@ -341,7 +373,7 @@ exports.addCollectionsBatch = async (req, res) => {
       if (!own) return res.status(403).json({ error: 'Forbidden' });
     }
 
-    // Defaults
+    // Defaults using payment plan (weekly/bi-weekly/monthly)
     const toWeeks = (n, unit) => {
       const num = Number(n || 0);
       switch ((unit || '').toLowerCase()) {
@@ -352,8 +384,39 @@ exports.addCollectionsBatch = async (req, res) => {
         default: return Math.max(num, 0);
       }
     };
-    const weeks = toWeeks(loan.loanDurationNumber, loan.loanDurationUnit);
-    const expectedWeekly = Number(loan.weeklyInstallment || 0) || (weeks > 0 ? (Number(loan.loanAmount || 0) * (1 + Number(loan.interestRate || 0) / 100)) / weeks : 0);
+    const plan = String(loan.paymentPlan || 'weekly').toLowerCase();
+    const totalWithInterest = Number(loan.loanAmount || 0) * (1 + Number(loan.interestRate || 0) / 100);
+    const calcPeriods = () => {
+      const start = loan.disbursementDate ? new Date(loan.disbursementDate) : null;
+      const end = loan.endingDate ? new Date(loan.endingDate) : null;
+      if (start && end && !isNaN(start) && !isNaN(end)) {
+        let i = 0; let current = new Date(start);
+        while (current <= end && i < 500) {
+          if (plan === 'weekly') current.setDate(current.getDate() + 7);
+          else if (plan === 'bi-weekly') current.setDate(current.getDate() + 14);
+          else current.setMonth(current.getMonth() + 1);
+          i += 1;
+        }
+        return i;
+      }
+      const weeks = toWeeks(loan.loanDurationNumber, loan.loanDurationUnit);
+      if (plan === 'weekly') return weeks;
+      if (plan === 'bi-weekly') return Math.max(Math.ceil(weeks / 2), 0);
+      // monthly fallback
+      const n = Number(loan.loanDurationNumber || 0);
+      const unit = String(loan.loanDurationUnit || 'weeks').toLowerCase();
+      let months = 0;
+      switch (unit) {
+        case 'days': months = Math.max(Math.ceil(n / 30), 0); break;
+        case 'weeks': months = Math.max(Math.ceil(weeks / 4), 0); break;
+        case 'months': months = Math.max(n, 0); break;
+        case 'years': months = Math.max(n * 12, 0); break;
+        default: months = Math.max(n, 0); break;
+      }
+      return months;
+    };
+    const periods = Math.max(calcPeriods(), 1);
+    const expectedWeekly = periods > 0 ? (totalWithInterest / periods) : 0;
 
     let totalAdd = 0;
     for (const entry of entries) {
@@ -367,8 +430,16 @@ exports.addCollectionsBatch = async (req, res) => {
       const fieldBalance = (entry.fieldBalance == null)
         ? Math.max(Number(weeklyAmount || 0) - fieldCollection - advancePayment, 0)
         : Number(entry.fieldBalance);
+      let memberName = entry.memberName || '';
+      if (!memberName && loan.client) {
+        try {
+          const Client = require('../models/Client');
+          const c = await Client.findById(loan.client).select('memberName');
+          if (c && c.memberName) memberName = c.memberName;
+        } catch (_) {}
+      }
       const rec = {
-        memberName: entry.memberName || '',
+        memberName,
         loanAmount: Number(entry.loanAmount || weeklyAmount),
         weeklyAmount,
         fieldCollection,

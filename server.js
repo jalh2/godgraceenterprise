@@ -49,6 +49,7 @@ app.use('/api/savings', require('./routes/savingsRoutes'));
 app.use('/api/assets', require('./routes/assetRoutes'));
 app.use('/api/distributions', require('./routes/distributionRoutes'));
 app.use('/api/metrics', require('./routes/metricsRoutes'));
+app.use('/api/expenses', require('./routes/expenseRoutes'));
 
 // MongoDB Connection
 const PORT = process.env.PORT || 5000;

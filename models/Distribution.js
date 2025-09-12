@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const distributionSchema = new mongoose.Schema(
   {
     loan: { type: mongoose.Schema.Types.ObjectId, ref: 'Loan', required: true },
-    group: { type: mongoose.Schema.Types.ObjectId, ref: 'Group', required: true },
+    group: { type: mongoose.Schema.Types.ObjectId, ref: 'Group' },
     member: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' },
     memberName: { type: String, trim: true },
     amount: { type: Number, required: true, min: 0 },

@@ -1,4 +1,6 @@
 const Loan = require('../models/Loan');
+const LoanAgreement = require('../models/LoanAgreement');
+const { mapAgreementFromLoan } = require('./loanAgreementController');
 const mongoose = require('mongoose');
 const Group = require('../models/Group');
 const { recordMany, computeInterestForLoan, collateralValueFromLoan } = require('../utils/metrics');
@@ -605,6 +607,18 @@ exports.setLoanStatus = async (req, res) => {
       }
     } catch (mErr) {
       console.error('[Metrics:setLoanStatus] failed:', mErr.message);
+    }
+    // Auto-create Loan Agreement upon approval (activation)
+    try {
+      if (status === 'active') {
+        const existingAgreement = await LoanAgreement.findOne({ loan: loan._id });
+        if (!existingAgreement) {
+          const payload = mapAgreementFromLoan(loan);
+          await LoanAgreement.create(payload);
+        }
+      }
+    } catch (aErr) {
+      console.error('[Agreement:setLoanStatus] failed to ensure agreement:', aErr.message);
     }
     res.json(loan);
   } catch (err) {

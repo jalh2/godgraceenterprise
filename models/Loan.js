@@ -6,6 +6,11 @@ const signatorySchema = new mongoose.Schema(
     signature: { type: String }, // Base64
     cellphoneNumber: { type: String },
     photo: { type: String }, // Base64 image for guarantor/bondsperson/community member
+    // Additional identity fields for bondsperson/guarantor as per new form spec
+    sex: { type: String, enum: ['Male', 'Female'] },
+    address: { type: String },
+    occupation: { type: String },
+    monthlyIncome: { type: Number },
   },
   { _id: false }
 );
@@ -46,6 +51,14 @@ const loanSchema = new mongoose.Schema(
     clients: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Client' }], // for group loan
     client: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' }, // for individual/express
 
+    // Loan form fields (Page 1: Creditor & Loan Details)
+    formNumber: { type: String }, // Form #
+    applicationDate: { type: String }, // Page 1: Date (string on form)
+    dateOfCredit: { type: Date }, // Official Use: Date to receive loan (kept)
+    cashAmountCredited: { type: Number }, // Cash Amount Credited
+    interestDeductedOrAdded: { type: Number }, // Interest Deducted or Added
+    totalAmountToBePaid: { type: Number }, // Total amount to be paid
+
     // Promissory/Reference Fields (similar to doc)
     meetingTime: { type: String },
     meetingDay: { type: String },
@@ -54,8 +67,8 @@ const loanSchema = new mongoose.Schema(
     loanAmountInWords: { type: String },
     loanDurationNumber: { type: Number },
     loanDurationUnit: { type: String, enum: ['days', 'weeks', 'months', 'years'], default: 'weeks' },
-    purposeOfLoan: { type: String },
-    businessType: { type: String },
+    purposeOfLoan: { type: String }, // Page 1: Purpose of the Loan
+    businessType: { type: String }, // Occupation/Type of Business (legacy)
     disbursementDate: { type: Date, default: Date.now },
     endingDate: { type: Date },
     previousLoanInfo: { type: String },
@@ -66,7 +79,7 @@ const loanSchema = new mongoose.Schema(
     rentingOrOwner: { type: String, enum: ['renting', 'owner'] },
     educationBackground: { type: String, enum: ['high school degree', 'vocational school', 'university degree'] },
     district: { type: String },
-    maritalStatus: { type: String, enum: ['Single', 'Married', 'Divorced', 'Widowed'] },
+    maritalStatus: { type: String, enum: ['Single', 'Married', 'Divorced', 'Divorce', 'Widowed', 'Serious Relationship'] },
     dependents: { type: Number },
     previousLoanSource: { type: String },
 
@@ -103,11 +116,133 @@ const loanSchema = new mongoose.Schema(
 
     // Express collateral
     collateralItem: collateralSchema,
+    // Free-text collateral list per form spec
+    collateralItemsText: { type: String },
 
     // Additional attachments and references
     loanPhoto: { type: String }, // Base64 image for loan form photo (optional)
     communityMemberInfo: signatorySchema, // For individual loan reference
     spouseName: { type: String }, // For individual loans if applicable
+
+    // Spouse Affirmation (Page 2)
+    spouseAffirmation: {
+      spouseName: { type: String },
+      applicantNameForSpouseSection: { type: String },
+      spouseSignature: { type: String }, // Base64 or string
+      spouseSignatureDate: { type: Date },
+      spouseContact: { type: String },
+    },
+
+    // Creditor's Personal Information snapshot at loan time
+    creditorInfo: {
+      nameOfCreditor: { type: String },
+      sex: { type: String, enum: ['Male', 'Female'] },
+      contacts: { type: String },
+      typeOfBusinessOrJob: { type: String },
+      presentAddress: { type: String }, // legacy alias
+      homeAddress: { type: String }, // Page 1: Home Address
+      businessAddress: { type: String },
+      dateOfBirth: { type: Date },
+      placeOfBirth: { type: String },
+      numberOfChildren: { type: Number },
+      totalEstimatedBusinessAmount: { type: Number }, // Page 1: Total Estimated Amount in the Business
+    },
+
+    // Applicant's Financial History (Page 1)
+    financialHistory: {
+      takenLoanBefore: { type: Boolean },
+      previousLoanInstitutionName: { type: String },
+      reasonLeftPreviousLoanEntity: { type: String },
+      hasCurrentLoan: { type: Boolean },
+      currentLoanInstitutionName: { type: String },
+      isPartOfFinancialInstitution: { type: Boolean },
+      financialInstitutionName: { type: String },
+    },
+
+    // Applicant Agreements (Page 2)
+    applicantAgreements: {
+      authorityContacts: { type: String },
+      agreeInspection: { type: Boolean },
+      reasonNoInspection: { type: String },
+      agreePaymentReminders: { type: Boolean },
+    },
+
+    // Income & Expenses (Page 2)
+    incomeAndExpenses: {
+      businessOrJobIncome: {
+        daily: { type: Number },
+        weekly: { type: Number },
+        monthly: { type: Number },
+      },
+      businessProfit: {
+        daily: { type: Number },
+        weekly: { type: Number },
+        monthly: { type: Number },
+      },
+      dailyExpenditure: { type: Number },
+    },
+
+    // Collateral details (Page 2)
+    collateralDetails: {
+      propertyGiven: { type: String },
+      propertyLocation: { type: String },
+      propertyValue: { type: Number },
+      repaymentPlanExplanation: { type: String },
+    },
+
+    // Related Contacts per form spec
+    relatedContacts: {
+      husbandWifeName: { type: String },
+      fatherMotherName: { type: String },
+      partnerName: { type: String },
+      familyPartnerContacts: { type: String },
+    },
+
+    // Signatures & Affirmations section
+    signatureSection: {
+      creditor: {
+        name: { type: String },
+        signature: { type: String }, // Base64 or string
+        signatureDate: { type: Date },
+        contacts: { type: String },
+      },
+      bondsperson1: {
+        name: { type: String },
+        signature: { type: String },
+        signatureDate: { type: Date },
+        contacts: { type: String },
+      },
+      bondsperson2: {
+        name: { type: String },
+        signature: { type: String },
+        signatureDate: { type: Date },
+        contacts: { type: String },
+      },
+    },
+
+    // Witnesses (3 entries typical)
+    witnesses: [
+      new mongoose.Schema(
+        {
+          name: { type: String },
+          contacts: { type: String },
+        },
+        { _id: false }
+      ),
+    ],
+
+    // Official Approvals (legacy)
+    attestedBy: { type: String }, // e.g., Manager's Name
+    approvedBy: { type: String }, // e.g., Approver's Name/Title
+
+    // Official Use Only (Page 3)
+    officialUse: {
+      dateOfInspection: { type: Date },
+      dateToReceiveLoan: { type: Date },
+      approvedAmountToBeGiven: { type: Number },
+      loanOfficerSignature: { type: String }, // Base64 or string
+      loanSupervisorApprovalSignature: { type: String }, // Base64 or string
+    },
   },
   { timestamps: true }
 );
@@ -174,6 +309,11 @@ loanSchema.pre('validate', function (next) {
     this.endingDate = addDuration(this.disbursementDate, this.loanDurationNumber, this.loanDurationUnit);
   }
 
+  // Default dateOfCredit (official use) to disbursementDate/createdAt if not provided
+  if (!this.dateOfCredit) {
+    this.dateOfCredit = this.disbursementDate || this.createdAt || new Date();
+  }
+
   // Defaults for payment plan and fee-related fields
   // Payment plan must be provided for group/individual loans per new requirements
   if ((this.loanType === 'group' || this.loanType === 'individual') && !this.paymentPlan) {
@@ -221,6 +361,18 @@ loanSchema.pre('validate', function (next) {
   const formFee = Number(this.formFeeAmount || 0);
   const net = Number((amt - (this.processingFeeAmount || 0) - formFee - inspection).toFixed(2));
   this.netDisbursedAmount = isNaN(net) ? 0 : net;
+
+  // Total amount to be paid default (principal + interest)
+  if (this.totalAmountToBePaid == null) {
+    const rate = Number(this.interestRate || 0);
+    const total = Number((amt * (1 + (rate / 100))).toFixed(2));
+    this.totalAmountToBePaid = isNaN(total) ? undefined : total;
+  }
+
+  // Cash amount credited defaults to net disbursed amount when not provided
+  if (this.cashAmountCredited == null) {
+    this.cashAmountCredited = this.netDisbursedAmount || 0;
+  }
 
   next();
 });

@@ -1,0 +1,170 @@
+const mongoose = require('mongoose');
+const Loan = require('../models/Loan');
+const LoanAgreement = require('../models/LoanAgreement');
+
+function canAccessLoan(user, loan) {
+  const role = (user && user.role ? String(user.role).toLowerCase() : '');
+  const restricted = role === 'loan officer' || role === 'field agent';
+  if (restricted && user) {
+    const own = (loan.createdByEmail && loan.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (loan.loanOfficerName === user.username);
+    return !!own;
+  }
+  return true;
+}
+
+function mapAgreementFromLoan(loan) {
+  if (!loan) return {};
+  const creditor = loan.creditorInfo || {};
+  const related = loan.relatedContacts || {};
+  const sig = loan.signatureSection || {};
+  const witnesses = Array.isArray(loan.witnesses) ? loan.witnesses.map(w => ({ name: w.name, contacts: w.contacts })) : [];
+  const guarantors = Array.isArray(loan.guarantors) ? loan.guarantors : [];
+
+  // Bondsperson details from guarantors 0 and 1 if present
+  const bond1 = guarantors[0] || {};
+  const bond2 = guarantors[1] || {};
+
+  const presentAddress = creditor.homeAddress || creditor.presentAddress || '';
+
+  return {
+    loan: loan._id,
+    branchName: loan.branchName,
+    branchCode: loan.branchCode,
+    loanOfficerName: loan.loanOfficerName,
+    currency: loan.currency,
+
+    formNumber: loan.formNumber,
+    dateOfCredit: loan.dateOfCredit,
+    cashAmountCredited: loan.cashAmountCredited,
+    amountInWords: loan.loanAmountInWords,
+    purposeOfLoan: loan.purposeOfLoan,
+    interestDeductedOrAdded: loan.interestDeductedOrAdded,
+    totalAmountToBePaid: loan.totalAmountToBePaid,
+
+    creditorInfo: {
+      nameOfCreditor: creditor.nameOfCreditor,
+      sex: creditor.sex,
+      contacts: creditor.contacts,
+      typeOfBusinessOrJob: creditor.typeOfBusinessOrJob,
+      presentAddress: presentAddress,
+      businessAddress: creditor.businessAddress,
+      dateOfBirth: creditor.dateOfBirth,
+      placeOfBirth: creditor.placeOfBirth,
+      numberOfChildren: creditor.numberOfChildren,
+    },
+
+    relatedContacts: {
+      husbandWifeName: related.husbandWifeName,
+      fatherMotherName: related.fatherMotherName,
+      partnerName: related.partnerName,
+      familyPartnerContacts: related.familyPartnerContacts,
+    },
+
+    collateralItemsText: loan.collateralItemsText,
+
+    bondsperson1: {
+      name: bond1.name,
+      sex: bond1.sex,
+      address: bond1.address,
+      occupation: bond1.occupation,
+    },
+    bondsperson2: {
+      name: bond2.name,
+      sex: bond2.sex,
+      address: bond2.address,
+      occupation: bond2.occupation,
+    },
+
+    signatureSection: {
+      creditor: {
+        name: sig?.creditor?.name,
+        signature: sig?.creditor?.signature,
+        signatureDate: sig?.creditor?.signatureDate,
+        contacts: sig?.creditor?.contacts,
+      },
+      bondsperson1: {
+        name: sig?.bondsperson1?.name,
+        signature: sig?.bondsperson1?.signature,
+        signatureDate: sig?.bondsperson1?.signatureDate,
+        contacts: sig?.bondsperson1?.contacts,
+      },
+      bondsperson2: {
+        name: sig?.bondsperson2?.name,
+        signature: sig?.bondsperson2?.signature,
+        signatureDate: sig?.bondsperson2?.signatureDate,
+        contacts: sig?.bondsperson2?.contacts,
+      },
+    },
+
+    witnesses,
+
+    attestedBy: loan.attestedBy,
+    approvedBy: loan.approvedBy,
+  };
+}
+
+// Export the mapper for reuse in other controllers
+exports.mapAgreementFromLoan = mapAgreementFromLoan;
+
+exports.getAgreementForLoan = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid loan id' });
+    const loan = await Loan.findById(id);
+    if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    if (!canAccessLoan(req.userDoc, loan)) return res.status(403).json({ error: 'Forbidden' });
+
+    const agreement = await LoanAgreement.findOne({ loan: loan._id });
+    if (!agreement) return res.status(404).json({ error: 'Loan agreement not found' });
+    res.json(agreement);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.initAgreementForLoan = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid loan id' });
+    const loan = await Loan.findById(id);
+    if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    if (!canAccessLoan(req.userDoc, loan)) return res.status(403).json({ error: 'Forbidden' });
+
+    let existing = await LoanAgreement.findOne({ loan: loan._id });
+    if (existing) return res.json(existing);
+
+    const payload = mapAgreementFromLoan(loan);
+    const created = await LoanAgreement.create(payload);
+    res.status(201).json(created);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+exports.updateAgreementForLoan = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid loan id' });
+    const loan = await Loan.findById(id);
+    if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    if (!canAccessLoan(req.userDoc, loan)) return res.status(403).json({ error: 'Forbidden' });
+
+    const allowedFields = [
+      'formNumber', 'dateOfCredit', 'cashAmountCredited', 'amountInWords', 'purposeOfLoan', 'interestDeductedOrAdded', 'totalAmountToBePaid',
+      'creditorInfo', 'relatedContacts', 'collateralItemsText', 'bondsperson1', 'bondsperson2', 'signatureSection', 'witnesses', 'attestedBy', 'approvedBy'
+    ];
+    const update = {};
+    for (const key of allowedFields) {
+      if (Object.prototype.hasOwnProperty.call(req.body, key)) update[key] = req.body[key];
+    }
+
+    const agreement = await LoanAgreement.findOneAndUpdate(
+      { loan: loan._id },
+      update,
+      { new: true, upsert: true }
+    );
+    res.json(agreement);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};

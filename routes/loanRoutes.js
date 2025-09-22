@@ -12,6 +12,7 @@ const {
   getLoansByGroup,
 } = require('../controllers/loanController');
 const { getDistributionsByLoan, createDistribution } = require('../controllers/distributionController');
+const { getAgreementForLoan, initAgreementForLoan, updateAgreementForLoan } = require('../controllers/loanAgreementController');
 
 router.post('/', createLoan);
 router.get('/', getAllLoans);
@@ -27,5 +28,10 @@ router.post('/:id/collections/batch', addCollectionsBatch);
 
 router.get('/:id/distributions', getDistributionsByLoan);
 router.post('/:id/distributions', createDistribution);
+
+// Loan Agreement endpoints
+router.get('/:id/agreement', getAgreementForLoan);
+router.post('/:id/agreement/init', initAgreementForLoan);
+router.put('/:id/agreement', updateAgreementForLoan);
 
 module.exports = router;

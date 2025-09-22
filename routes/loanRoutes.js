@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   createLoan,
   getAllLoans,
+  getDueCollections,
   getLoanById,
   updateLoan,
   deleteLoan,
@@ -16,6 +17,8 @@ const { getAgreementForLoan, initAgreementForLoan, updateAgreementForLoan } = re
 
 router.post('/', createLoan);
 router.get('/', getAllLoans);
+// Daily/weekly due collections listing
+router.get('/due-collections', getDueCollections);
 // Group-scoped listing (primarily individual loans for group members)
 router.get('/by-group/:groupId', getLoansByGroup);
 router.get('/:id', getLoanById);

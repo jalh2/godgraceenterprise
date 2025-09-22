@@ -4,6 +4,7 @@ const { mapAgreementFromLoan } = require('./loanAgreementController');
 const mongoose = require('mongoose');
 const Group = require('../models/Group');
 const { recordMany, computeInterestForLoan, collateralValueFromLoan } = require('../utils/metrics');
+const SavingsAccount = require('../models/Savings');
 
 // Helper to sanitize and validate incoming loan payload
 function sanitizeLoanPayload(payload) {
@@ -106,6 +107,7 @@ exports.createLoan = async (req, res) => {
       const collateral = collateralValueFromLoan(loan);
       const events = [];
       if (collateral && collateral !== 0) events.push({ ...base, metric: 'totalCollateral', value: collateral });
+      if (loan.collateralCashAmount) events.push({ ...base, metric: 'collateralCashRequired', value: Number(loan.collateralCashAmount || 0) });
       if (loan.formFeeAmount) events.push({ ...base, metric: 'totalFormFees', value: Number(loan.formFeeAmount || 0) });
       if (loan.inspectionFeeAmount) events.push({ ...base, metric: 'totalInspectionFees', value: Number(loan.inspectionFeeAmount || 0) });
       if (loan.processingFeeAmount) events.push({ ...base, metric: 'totalProcessingFees', value: Number(loan.processingFeeAmount || 0) });
@@ -147,6 +149,188 @@ exports.getAllLoans = async (req, res) => {
       .sort({ createdAt: -1 });
     console.log('[Loans:getAllLoans]', { filter, count: loans.length });
     res.json(loans);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// List due collections by date range (default: today). Returns schedule-aware entries per loan/date.
+// Query params:
+// - from: YYYY-MM-DD (inclusive), default: today
+// - to: YYYY-MM-DD (inclusive), default: same as from
+// - daysAhead: number (optional) when 'to' not provided; computes to = from + daysAhead
+// - branchCode, branchName, loanType, status (default 'active')
+// - currency (optional)
+exports.getDueCollections = async (req, res) => {
+  try {
+    const safeKey = (d) => {
+      const nd = d ? new Date(d) : null;
+      return nd && !isNaN(nd) ? nd.toISOString().slice(0, 10) : '';
+    };
+
+    // Parse range
+    const todayKey = safeKey(new Date());
+    let fromKey = String(req.query.from || '').slice(0, 10);
+    if (!fromKey || fromKey.length !== 10) fromKey = todayKey;
+    let toKey = String(req.query.to || '').slice(0, 10);
+    if (!toKey || toKey.length !== 10) {
+      const daysAhead = Number(req.query.daysAhead || 0);
+      if (daysAhead && Number.isFinite(daysAhead)) {
+        const d = new Date(fromKey);
+        d.setDate(d.getDate() + daysAhead);
+        toKey = safeKey(d);
+      } else {
+        toKey = fromKey;
+      }
+    }
+
+    // Build DB filter
+    const { branchCode, branchName, loanType, status, currency } = req.query;
+    const filter = {};
+    if (branchCode) filter.branchCode = branchCode;
+    if (branchName) filter.branchName = branchName;
+    if (loanType) filter.loanType = loanType;
+    if (status) filter.status = status; else filter.status = 'active';
+    if (currency) filter.currency = currency;
+
+    // Restrict to creator/officer for restricted roles (loan officer/field agent)
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      filter.$or = [
+        { createdByEmail: user.email },
+        { loanOfficerName: user.username },
+      ];
+      if (!branchCode) filter.branchCode = user.branchCode;
+    }
+
+    // Fetch necessary fields only
+    const loans = await Loan.find(filter)
+      .select(
+        'loanType group client collections loanAmount interestRate currency paymentPlan loanDurationNumber loanDurationUnit disbursementDate collectionStartDate endingDate branchName branchCode loanOfficerName createdAt status'
+      )
+      .populate('client', 'memberName')
+      .populate('group', 'groupName')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const addMonths = (base, n) => {
+      const d = new Date(base);
+      const day = d.getDate();
+      d.setMonth(d.getMonth() + n);
+      if (d.getDate() !== day) {
+        // JS adjusts end-of-month; accept it
+      }
+      return d;
+    };
+    const toWeeks = (n, unit) => {
+      const num = Number(n || 0);
+      switch (String(unit || '').toLowerCase()) {
+        case 'days': return Math.max(Math.ceil(num / 7), 0);
+        case 'weeks': return Math.max(num, 0);
+        case 'months': return Math.max(num * 4, 0);
+        case 'years': return Math.max(num * 52, 0);
+        default: return Math.max(num, 0);
+      }
+    };
+
+    const items = [];
+    for (const loan of loans) {
+      const plan = String(loan.paymentPlan || 'weekly').toLowerCase();
+      const totalWithInterest = Number(loan.loanAmount || 0) * (1 + Number(loan.interestRate || 0) / 100);
+      const start = loan.collectionStartDate ? new Date(loan.collectionStartDate) : (loan.disbursementDate ? new Date(loan.disbursementDate) : (loan.createdAt ? new Date(loan.createdAt) : null));
+      const end = loan.endingDate ? new Date(loan.endingDate) : null;
+      const dates = [];
+      if (start && end && !isNaN(start) && !isNaN(end)) {
+        let i = 0; let current = new Date(start);
+        while (current <= end && i < 500) {
+          dates.push(safeKey(current));
+          if (plan === 'weekly') current.setDate(current.getDate() + 7);
+          else if (plan === 'bi-weekly') current.setDate(current.getDate() + 14);
+          else current = addMonths(current, 1);
+          i += 1;
+        }
+      } else {
+        const weeks = toWeeks(loan.loanDurationNumber, loan.loanDurationUnit);
+        let periods = 0;
+        if (plan === 'weekly') periods = weeks;
+        else if (plan === 'bi-weekly') periods = Math.max(Math.ceil(weeks / 2), 0);
+        else {
+          const n = Number(loan.loanDurationNumber || 0);
+          const unit = String(loan.loanDurationUnit || 'weeks').toLowerCase();
+          let months = 0;
+          switch (unit) {
+            case 'days': months = Math.max(Math.ceil(n / 30), 0); break;
+            case 'weeks': months = Math.max(Math.ceil(weeks / 4), 0); break;
+            case 'months': months = Math.max(n, 0); break;
+            case 'years': months = Math.max(n * 12, 0); break;
+            default: months = Math.max(n, 0); break;
+          }
+          periods = months;
+        }
+        const count = Math.max(periods, 0);
+        for (let i = 0; i < count; i++) {
+          const d = new Date(start || new Date());
+          if (plan === 'weekly') d.setDate(d.getDate() + i * 7);
+          else if (plan === 'bi-weekly') d.setDate(d.getDate() + i * 14);
+          else d.setMonth(d.getMonth() + i);
+          dates.push(safeKey(d));
+        }
+      }
+
+      if (!dates.length) continue; // skip loans without any schedule
+
+      const periods = Math.max(dates.length, 1);
+      const baseDue = periods > 0 ? (totalWithInterest / periods) : 0;
+      const collections = Array.isArray(loan.collections) ? loan.collections : [];
+      const key = (c) => safeKey(c.collectionDate);
+
+      for (let i = 0; i < dates.length; i++) {
+        const dateStr = dates[i];
+        if (dateStr < fromKey || dateStr > toKey) continue;
+        const expected = (i === periods - 1 && periods > 0)
+          ? Math.max(totalWithInterest - baseDue * (periods - 1), 0)
+          : baseDue;
+
+        const collectedOnDate = collections
+          .filter((c) => key(c) === dateStr)
+          .reduce((s, c) => s + Number(c.fieldCollection || 0), 0);
+        const paidBefore = collections
+          .filter((c) => key(c) < dateStr)
+          .reduce((s, c) => s + Number(c.fieldCollection || 0), 0);
+        const outstandingBefore = Math.max(totalWithInterest - paidBefore, 0);
+        const scheduledRemainingAfter = Math.max(totalWithInterest - (i === periods - 1 ? totalWithInterest : baseDue * (i + 1)), 0);
+        const overdue = Math.max(Number(expected || 0) - Number(collectedOnDate || 0), 0);
+
+        items.push({
+          loan: String(loan._id),
+          loanType: loan.loanType,
+          branchName: loan.branchName,
+          branchCode: loan.branchCode,
+          loanOfficerName: loan.loanOfficerName,
+          currency: loan.currency,
+          clientName: loan.client && loan.client.memberName ? loan.client.memberName : null,
+          groupName: loan.group && loan.group.groupName ? loan.group.groupName : null,
+          dueDate: dateStr,
+          periodIndex: i + 1,
+          periods,
+          scheduledAmount: Math.round(Number(expected || 0) * 100) / 100,
+          collectedOnDate: Math.round(Number(collectedOnDate || 0) * 100) / 100,
+          overdue: Math.round(Number(overdue || 0) * 100) / 100,
+          outstandingBefore: Math.round(Number(outstandingBefore || 0) * 100) / 100,
+          scheduledRemainingAfter: Math.round(Number(scheduledRemainingAfter || 0) * 100) / 100,
+        });
+      }
+    }
+
+    // Sort by dueDate asc, then overdue desc
+    items.sort((a, b) => {
+      if (a.dueDate !== b.dueDate) return a.dueDate < b.dueDate ? -1 : 1;
+      return (Number(b.overdue || 0) - Number(a.overdue || 0));
+    });
+
+    res.json({ range: { from: fromKey, to: toKey }, count: items.length, items });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -259,9 +443,9 @@ exports.addCollection = async (req, res) => {
     const plan = String(loan.paymentPlan || 'weekly').toLowerCase();
     const totalWithInterest = Number(loan.loanAmount || 0) * (1 + Number(loan.interestRate || 0) / 100);
     const calcPeriods = () => {
-      const start = loan.disbursementDate ? new Date(loan.disbursementDate) : null;
+      const start = (loan.collectionStartDate ? new Date(loan.collectionStartDate) : (loan.disbursementDate ? new Date(loan.disbursementDate) : null));
       const end = loan.endingDate ? new Date(loan.endingDate) : null;
-      if (start && end && !isNaN(start) && !isNaN(end)) {
+      if (!loan.collectionStartDate && start && end && !isNaN(start) && !isNaN(end)) {
         let i = 0;
         let current = new Date(start);
         while (current <= end && i < 500) {
@@ -389,7 +573,7 @@ exports.addCollectionsBatch = async (req, res) => {
     const plan = String(loan.paymentPlan || 'weekly').toLowerCase();
     const totalWithInterest = Number(loan.loanAmount || 0) * (1 + Number(loan.interestRate || 0) / 100);
     const calcPeriods = () => {
-      const start = loan.disbursementDate ? new Date(loan.disbursementDate) : null;
+      const start = (loan.collectionStartDate ? new Date(loan.collectionStartDate) : (loan.disbursementDate ? new Date(loan.disbursementDate) : null));
       const end = loan.endingDate ? new Date(loan.endingDate) : null;
       if (start && end && !isNaN(start) && !isNaN(end)) {
         let i = 0; let current = new Date(start);
@@ -619,6 +803,68 @@ exports.setLoanStatus = async (req, res) => {
       }
     } catch (aErr) {
       console.error('[Agreement:setLoanStatus] failed to ensure agreement:', aErr.message);
+    }
+    // Auto-create collateral savings account and deposit collateral upon activation
+    try {
+      if (status === 'active') {
+        // Only for loans tied to a single client (express/individual) and positive collateral amount
+        const hasClient = !!loan.client;
+        const collateralAmt = Number(loan.collateralCashAmount || 0);
+        if (hasClient && collateralAmt > 0) {
+          // Ensure individual savings account exists for this client
+          let account = await SavingsAccount.findOne({ accountType: 'individual', client: loan.client });
+          if (!account) {
+            account = await SavingsAccount.create({
+              accountType: 'individual',
+              client: loan.client,
+              group: loan.group || undefined,
+              branchName: loan.branchName,
+              branchCode: loan.branchCode,
+              loanCycle: 1,
+              currency: loan.currency,
+            });
+          }
+          // Deposit the collateral into the savings account
+          const prev = Number(account.currentBalance || 0);
+          const newBalance = prev + collateralAmt;
+          account.transactions.push({
+            date: loan.disbursementDate || new Date(),
+            savingAmount: collateralAmt,
+            withdrawalAmount: 0,
+            balance: newBalance,
+            currency: account.currency,
+            tellerSignature: undefined,
+            managerSignature: undefined,
+            branchName: loan.branchName,
+            branchCode: loan.branchCode,
+          });
+          account.currentBalance = newBalance;
+          await account.save();
+          // Record metrics for collateral cash deposited into savings
+          try {
+            await recordMany([
+              {
+                metric: 'collateralCashDeposited',
+                value: collateralAmt,
+                date: loan.disbursementDate || loan.updatedAt || new Date(),
+                branchName: loan.branchName,
+                branchCode: loan.branchCode,
+                loanOfficerName: loan.loanOfficerName,
+                currency: account.currency,
+                loan: loan._id,
+                group: loan.group,
+                client: loan.client,
+                extra: { autoDeposit: true },
+              },
+            ]);
+          } catch (cmErr) {
+            console.error('[Metrics:collateralDeposit] failed:', cmErr.message);
+          }
+        }
+      }
+    } catch (sErr) {
+      console.error('[Savings:setLoanStatus] failed to ensure collateral savings:', sErr.message);
+      // Do not fail the status change due to savings errors
     }
     res.json(loan);
   } catch (err) {

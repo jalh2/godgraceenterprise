@@ -1,4 +1,5 @@
 const SavingsAccount = require('../models/Savings');
+const { recordMany } = require('../utils/metrics');
 
 exports.createSavingsAccount = async (req, res) => {
   try {
@@ -107,6 +108,29 @@ exports.addTransaction = async (req, res) => {
     account.transactions.push(txn);
     account.currentBalance = newBalance;
     await account.save();
+    // Metrics: record deposit and/or withdrawal
+    try {
+      const events = [];
+      const base = {
+        date: txn.date || new Date(),
+        branchName: txn.branchName || account.branchName,
+        branchCode: txn.branchCode || account.branchCode,
+        currency: txn.currency || account.currency,
+        client: account.client,
+        group: account.group,
+      };
+      const dep = Number(savingAmount || 0);
+      const wit = Number(withdrawalAmount || 0);
+      if (dep > 0) {
+        events.push({ ...base, metric: 'collateralSavingsDeposit', value: dep });
+      }
+      if (wit > 0) {
+        events.push({ ...base, metric: 'collateralSavingsWithdrawal', value: wit });
+      }
+      if (events.length) await recordMany(events);
+    } catch (mErr) {
+      console.error('[Metrics:savingsTransaction] failed:', mErr.message);
+    }
 
     res.status(201).json(account);
   } catch (err) {

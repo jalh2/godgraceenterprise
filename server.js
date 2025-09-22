@@ -43,6 +43,7 @@ app.get('/', (req, res) => {
 // Routes
 app.use('/api/users', require('./routes/userRoutes'));
 app.use('/api/groups', require('./routes/groupRoutes'));
+app.use('/api/communities', require('./routes/communityRoutes'));
 app.use('/api/clients', require('./routes/clientRoutes'));
 app.use('/api/loans', require('./routes/loanRoutes'));
 app.use('/api/savings', require('./routes/savingsRoutes'));
@@ -50,6 +51,7 @@ app.use('/api/assets', require('./routes/assetRoutes'));
 app.use('/api/distributions', require('./routes/distributionRoutes'));
 app.use('/api/metrics', require('./routes/metricsRoutes'));
 app.use('/api/expenses', require('./routes/expenseRoutes'));
+app.use('/api/loan-config', require('./routes/loanConfigRoutes'));
 
 // MongoDB Connection
 const PORT = process.env.PORT || 5000;

@@ -3,6 +3,29 @@ const Loan = require('../models/Loan');
 const { recordMany } = require('../utils/metrics');
 const mongoose = require('mongoose');
 
+// Compute a collectionStartDate based on a rule and a base (distribution) date
+function computeCollectionStartDate(rule, baseDate) {
+  try {
+    const d = baseDate ? new Date(baseDate) : new Date();
+    if (!d || isNaN(d)) return null;
+    const r = String(rule || '').toLowerCase();
+    if (r === 'one_week_after') {
+      const nd = new Date(d);
+      nd.setDate(nd.getDate() + 7);
+      return nd;
+    }
+    if (r === 'next_week' || r === 'following_week') {
+      // Start of next week (Monday) strictly after base date
+      const nd = new Date(d);
+      const day = nd.getDay(); // 0=Sun..6=Sat
+      const daysToNextMonday = ((8 - day) % 7) || 7; // if already Monday, go to next week's Monday
+      nd.setDate(nd.getDate() + daysToNextMonday);
+      return nd;
+    }
+  } catch (_) {}
+  return null;
+}
+
 exports.createDistribution = async (req, res) => {
   try {
     const id = req.params.id || req.body.loan;
@@ -69,6 +92,25 @@ exports.createDistribution = async (req, res) => {
     } else {
       const payload = normalize(req.body || {});
       created = await Distribution.create(payload);
+    }
+
+    // If caller supplied a collectionStartDate or a scheduleStartRule, update the loan's collectionStartDate
+    try {
+      let desiredStart = null;
+      const first = Array.isArray(created) ? (created[0] || null) : created;
+      if (req.body && req.body.collectionStartDate) {
+        const dt = new Date(req.body.collectionStartDate);
+        if (dt && !isNaN(dt)) desiredStart = dt;
+      } else if (req.body && req.body.scheduleStartRule) {
+        const anchor = (first && first.date) || req.body.date || new Date();
+        const computed = computeCollectionStartDate(req.body.scheduleStartRule, anchor);
+        if (computed) desiredStart = computed;
+      }
+      if (desiredStart) {
+        await Loan.findByIdAndUpdate(id, { collectionStartDate: desiredStart }, { new: true });
+      }
+    } catch (sErr) {
+      console.error('[Distribution:create] failed to set collectionStartDate:', sErr.message);
     }
 
     // Record metrics for all created entries
@@ -170,6 +212,24 @@ exports.updateDistribution = async (req, res) => {
       runValidators: true,
     });
     if (!updated) return res.status(404).json({ error: 'Distribution not found' });
+
+    // If provided, update the loan's collectionStartDate as well
+    try {
+      let desiredStart = null;
+      if (req.body && req.body.collectionStartDate) {
+        const dt = new Date(req.body.collectionStartDate);
+        if (dt && !isNaN(dt)) desiredStart = dt;
+      } else if (req.body && req.body.scheduleStartRule) {
+        const anchor = (updated && updated.date) || req.body.date || (before && before.date) || new Date();
+        const computed = computeCollectionStartDate(req.body.scheduleStartRule, anchor);
+        if (computed) desiredStart = computed;
+      }
+      if (desiredStart) {
+        await Loan.findByIdAndUpdate(updated.loan || (before && before.loan), { collectionStartDate: desiredStart }, { new: true });
+      }
+    } catch (sErr) {
+      console.error('[Distribution:update] failed to set collectionStartDate:', sErr.message);
+    }
 
     // Metrics: compute delta in amount and emit compensating events
     try {

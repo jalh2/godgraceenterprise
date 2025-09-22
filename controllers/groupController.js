@@ -6,6 +6,10 @@ exports.createGroup = async (req, res) => {
     const role = (user && user.role ? String(user.role).toLowerCase() : '');
     const restricted = role === 'loan officer' || role === 'field agent';
     const payload = { ...req.body };
+    // Sanitize optional refs
+    if (Object.prototype.hasOwnProperty.call(payload, 'community') && !payload.community) {
+      delete payload.community;
+    }
     if (user && user.email) payload.createdByEmail = user.email;
     if (restricted && user) {
       payload.branchName = user.branchName;
@@ -20,10 +24,12 @@ exports.createGroup = async (req, res) => {
 
 exports.getAllGroups = async (req, res) => {
   try {
-    const { branchName, branchCode } = req.query;
+    const { branchName, branchCode, community, communityId } = req.query;
     const filter = {};
     if (branchName) filter.branchName = branchName;
     if (branchCode) filter.branchCode = branchCode;
+    const commId = community || communityId;
+    if (commId) filter.community = commId;
     const user = req.userDoc;
     const role = (user && user.role ? String(user.role).toLowerCase() : '');
     const restricted = role === 'loan officer' || role === 'field agent';
@@ -31,7 +37,7 @@ exports.getAllGroups = async (req, res) => {
       filter.createdByEmail = user.email;
       if (!branchCode) filter.branchCode = user.branchCode;
     }
-    const groups = await Group.find(filter).populate('clients').sort({ createdAt: -1 });
+    const groups = await Group.find(filter).populate('clients').populate('community').sort({ createdAt: -1 });
     console.log('[Groups:getAllGroups]', { filter, count: groups.length });
     res.json(groups);
   } catch (err) {
@@ -42,7 +48,7 @@ exports.getAllGroups = async (req, res) => {
 exports.getGroupById = async (req, res) => {
   try {
     const id = req.params.id;
-    const group = await Group.findById(id).populate('clients');
+    const group = await Group.findById(id).populate('clients').populate('community');
     if (!group) return res.status(404).json({ error: 'Group not found' });
     const user = req.userDoc;
     const role = (user && user.role ? String(user.role).toLowerCase() : '');
@@ -72,6 +78,10 @@ exports.updateGroup = async (req, res) => {
       }
     }
     const payload = { ...req.body };
+    // Sanitize optional refs
+    if (Object.prototype.hasOwnProperty.call(payload, 'community') && !payload.community) {
+      delete payload.community;
+    }
     if (restricted && user) {
       payload.branchName = user.branchName;
       payload.branchCode = user.branchCode;

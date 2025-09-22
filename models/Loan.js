@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const LoanConfig = require('./LoanConfig');
 
 const signatorySchema = new mongoose.Schema(
   {
@@ -70,6 +71,7 @@ const loanSchema = new mongoose.Schema(
     purposeOfLoan: { type: String }, // Page 1: Purpose of the Loan
     businessType: { type: String }, // Occupation/Type of Business (legacy)
     disbursementDate: { type: Date, default: Date.now },
+    collectionStartDate: { type: Date },
     endingDate: { type: Date },
     previousLoanInfo: { type: String },
     memberOccupation: { type: String },
@@ -271,7 +273,7 @@ function addDuration(date, number, unit) {
   return d;
 }
 
-loanSchema.pre('validate', function (next) {
+loanSchema.pre('validate', async function (next) {
   // Basic branch validation
   if (!this.branchName || !this.branchCode) {
     this.invalidate('branchName', 'branchName and branchCode are required');
@@ -291,8 +293,8 @@ loanSchema.pre('validate', function (next) {
     // For group-member individual loans, guarantors are optional.
     // Only enforce 2 guarantors when the loan is not associated with a group.
     if (!this.group) {
-      if (!this.guarantors || this.guarantors.length < 2) {
-        this.invalidate('guarantors', 'Two guarantors are required for individual loans');
+      if (!this.guarantors || this.guarantors.length < 1) {
+        this.invalidate('guarantors', 'At least one guarantor is required for individual loans');
       }
     }
   }
@@ -314,6 +316,22 @@ loanSchema.pre('validate', function (next) {
     this.dateOfCredit = this.disbursementDate || this.createdAt || new Date();
   }
 
+  // Fetch dynamic loan configuration (per-branch or global) to derive defaults
+  let configDoc = null;
+  try {
+    if (this.branchCode) {
+      configDoc = await LoanConfig.findOne({ branchCode: this.branchCode });
+    }
+    if (!configDoc) {
+      configDoc = await LoanConfig.findOne({ branchCode: { $exists: false } });
+    }
+  } catch (e) {
+    // continue with built-in fallbacks
+  }
+
+  const typeKey = String(this.loanType || '').toLowerCase();
+  const typeCfg = (configDoc && configDoc[typeKey]) || {};
+
   // Defaults for payment plan and fee-related fields
   // Payment plan must be provided for group/individual loans per new requirements
   if ((this.loanType === 'group' || this.loanType === 'individual') && !this.paymentPlan) {
@@ -322,28 +340,35 @@ loanSchema.pre('validate', function (next) {
 
   // Default processing fee percent
   if (this.processingFeePercent == null) {
-    if (this.loanType === 'group') this.processingFeePercent = 3;
-    if (this.loanType === 'individual') this.processingFeePercent = this.group ? 3 : 4;
+    const fallback = (this.loanType === 'group') ? 3 : (this.loanType === 'individual' ? (this.group ? 3 : 4) : 0);
+    this.processingFeePercent = Number(typeCfg.processingFeePercent ?? fallback);
   }
 
   // Default collateral cash percent
   if (this.collateralCashPercent == null && (this.loanType === 'group' || this.loanType === 'individual')) {
-    this.collateralCashPercent = 8;
+    const fallback = (this.loanType === 'individual') ? 10 : 8; // individual collateral default 10%
+    this.collateralCashPercent = Number(typeCfg.collateralCashPercent ?? fallback);
   }
 
   // Default form fee amount if not provided
   if ((this.loanType === 'group' || this.loanType === 'individual') && (this.formFeeAmount == null)) {
-    if (this.loanType === 'group') {
-      // Form fee LRD 200 for group loans when currency is LRD
-      this.formFeeAmount = this.currency === 'LRD' ? 200 : 0;
+    if (this.currency !== 'LRD') {
+      this.formFeeAmount = 0;
+    } else if (this.loanType === 'group' || this.group) {
+      const grpCfgAmt = configDoc && configDoc.group && configDoc.group.formFeeAmountLRD;
+      this.formFeeAmount = Number(grpCfgAmt ?? 200);
     } else if (this.loanType === 'individual') {
-      // If linked to group, use group form fee; otherwise individual new/returning
-      if (this.group) {
-        this.formFeeAmount = this.currency === 'LRD' ? 200 : 0;
-      } else {
-        const returning = !!this.isReturningClient;
-        this.formFeeAmount = this.currency === 'LRD' ? (returning ? 400 : 500) : 0;
-      }
+      const returning = !!this.isReturningClient;
+      const indNew = configDoc && configDoc.individual && configDoc.individual.formFeeAmountLRDNew;
+      const indRet = configDoc && configDoc.individual && configDoc.individual.formFeeAmountLRDReturning;
+      this.formFeeAmount = Number(returning ? (indRet ?? 400) : (indNew ?? 500));
+    }
+  }
+
+  // Optional default inspection fee from config if not provided
+  if (this.inspectionFeeAmount == null || this.inspectionFeeAmount === '') {
+    if (typeCfg && typeCfg.inspectionFeeDefault != null) {
+      this.inspectionFeeAmount = Number(typeCfg.inspectionFeeDefault);
     }
   }
 

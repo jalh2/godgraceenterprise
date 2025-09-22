@@ -9,8 +9,11 @@ const groupSchema = new mongoose.Schema(
     createdByEmail: { type: String, index: true },
     clients: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Client' }],
     loanOfficer: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    community: { type: mongoose.Schema.Types.ObjectId, ref: 'Community' },
     meetingDay: { type: String },
     meetingTime: { type: String },
+    groupLeader: { type: String, trim: true },
+    groupLeaderPhone: { type: String, trim: true },
     status: { type: String, enum: ['Active', 'Inactive', 'Pending'], default: 'Pending' },
     totalLoans: { type: Number, default: 0 },
     // Sum of loanAmount across individual member loans associated with this group
@@ -28,3 +31,4 @@ groupSchema.virtual('memberCount').get(function () {
 });
 
 module.exports = mongoose.model('Group', groupSchema);
+

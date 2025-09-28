@@ -55,7 +55,6 @@ const loanSchema = new mongoose.Schema(
     // Loan form fields (Page 1: Creditor & Loan Details)
     formNumber: { type: String }, // Form #
     applicationDate: { type: String }, // Page 1: Date (string on form)
-    dateOfCredit: { type: Date }, // Official Use: Date to receive loan (kept)
     cashAmountCredited: { type: Number }, // Cash Amount Credited
     interestDeductedOrAdded: { type: Number }, // Interest Deducted or Added
     totalAmountToBePaid: { type: Number }, // Total amount to be paid
@@ -311,10 +310,7 @@ loanSchema.pre('validate', async function (next) {
     this.endingDate = addDuration(this.disbursementDate, this.loanDurationNumber, this.loanDurationUnit);
   }
 
-  // Default dateOfCredit (official use) to disbursementDate/createdAt if not provided
-  if (!this.dateOfCredit) {
-    this.dateOfCredit = this.disbursementDate || this.createdAt || new Date();
-  }
+  // dateOfCredit removed from Loan form; no defaulting here
 
   // Fetch dynamic loan configuration (per-branch or global) to derive defaults
   let configDoc = null;

@@ -1,22 +1,47 @@
 const Group = require('../models/Group');
+const Counter = require('../models/Counter');
 
 exports.createGroup = async (req, res) => {
   try {
     const user = req.userDoc;
     const role = (user && user.role ? String(user.role).toLowerCase() : '');
     const restricted = role === 'loan officer' || role === 'field agent';
-    const payload = { ...req.body };
+    const base = { ...req.body };
+    // Never trust incoming groupCode; it will be auto-generated
+    if (Object.prototype.hasOwnProperty.call(base, 'groupCode')) delete base.groupCode;
     // Sanitize optional refs
-    if (Object.prototype.hasOwnProperty.call(payload, 'community') && !payload.community) {
-      delete payload.community;
+    if (Object.prototype.hasOwnProperty.call(base, 'community') && !base.community) {
+      delete base.community;
     }
-    if (user && user.email) payload.createdByEmail = user.email;
+    if (user && user.email) base.createdByEmail = user.email;
     if (restricted && user) {
-      payload.branchName = user.branchName;
-      payload.branchCode = user.branchCode;
+      base.branchName = user.branchName;
+      base.branchCode = user.branchCode;
     }
-    const group = await Group.create(payload);
-    res.status(201).json(group);
+
+    // Generate unique group code using Counter with retry
+    let created;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const counter = await Counter.findByIdAndUpdate(
+        'group',
+        { $inc: { seq: 1 } },
+        { new: true, upsert: true }
+      );
+      const generatedCode = `GRP-${String(counter.seq).padStart(6, '0')}`;
+      try {
+        created = await Group.create({ ...base, groupCode: generatedCode });
+        break;
+      } catch (e) {
+        if (e && e.code === 11000 && /groupCode/i.test(e.message || '')) {
+          // Duplicate collision, retry
+          continue;
+        }
+        throw e;
+      }
+    }
+
+    if (!created) return res.status(500).json({ error: 'Failed to allocate group code' });
+    res.status(201).json(created);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -37,7 +62,11 @@ exports.getAllGroups = async (req, res) => {
       filter.createdByEmail = user.email;
       if (!branchCode) filter.branchCode = user.branchCode;
     }
-    const groups = await Group.find(filter).populate('clients').populate('community').sort({ createdAt: -1 });
+    const groups = await Group.find(filter)
+      .populate('clients')
+      .populate('community')
+      .populate('loanOfficer')
+      .sort({ createdAt: -1 });
     console.log('[Groups:getAllGroups]', { filter, count: groups.length });
     res.json(groups);
   } catch (err) {
@@ -48,7 +77,10 @@ exports.getAllGroups = async (req, res) => {
 exports.getGroupById = async (req, res) => {
   try {
     const id = req.params.id;
-    const group = await Group.findById(id).populate('clients').populate('community');
+    const group = await Group.findById(id)
+      .populate('clients')
+      .populate('community')
+      .populate('loanOfficer');
     if (!group) return res.status(404).json({ error: 'Group not found' });
     const user = req.userDoc;
     const role = (user && user.role ? String(user.role).toLowerCase() : '');
@@ -81,6 +113,10 @@ exports.updateGroup = async (req, res) => {
     // Sanitize optional refs
     if (Object.prototype.hasOwnProperty.call(payload, 'community') && !payload.community) {
       delete payload.community;
+    }
+    // Prevent updates to groupCode
+    if (Object.prototype.hasOwnProperty.call(payload, 'groupCode')) {
+      delete payload.groupCode;
     }
     if (restricted && user) {
       payload.branchName = user.branchName;

@@ -1,7 +1,7 @@
 const LoanConfig = require('../models/LoanConfig');
 
 function isApprover(user) {
-  const role = (user && user.role ? String(user.role).toLowerCase() : '');
+  const role = (user && user.role ? String(user.role).trim().toLowerCase() : '');
   return role === 'admin' || role === 'branch head';
 }
 

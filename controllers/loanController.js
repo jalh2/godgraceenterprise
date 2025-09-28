@@ -77,7 +77,7 @@ exports.createLoan = async (req, res) => {
     if (error) return res.status(400).json({ error });
     // Attach creator identity and enforce branch/officer for restricted roles
     const user = req.userDoc;
-    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const role = (user && user.role ? String(user.role).trim().toLowerCase() : '');
     const restricted = role === 'loan officer' || role === 'field agent';
     if (user && user.email) clean.createdByEmail = user.email;
     if (restricted && user) {
@@ -133,7 +133,7 @@ exports.getAllLoans = async (req, res) => {
 
     // Restrict to creator/officer for loan officer and field agent
     const user = req.userDoc;
-    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const role = (user && user.role ? String(user.role).trim().toLowerCase() : '');
     const restricted = role === 'loan officer' || role === 'field agent';
     if (restricted && user) {
       filter.$or = [
@@ -195,7 +195,7 @@ exports.getDueCollections = async (req, res) => {
 
     // Restrict to creator/officer for restricted roles (loan officer/field agent)
     const user = req.userDoc;
-    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const role = (user && user.role ? String(user.role).trim().toLowerCase() : '');
     const restricted = role === 'loan officer' || role === 'field agent';
     if (restricted && user) {
       filter.$or = [
@@ -342,7 +342,7 @@ exports.getLoanById = async (req, res) => {
     if (!loan) return res.status(404).json({ error: 'Loan not found' });
     // Access control
     const user = req.userDoc;
-    const role = (user && user.role ? String(user.role).toLowerCase() : '');
+    const role = (user && user.role ? String(user.role).trim().toLowerCase() : '');
     const restricted = role === 'loan officer' || role === 'field agent';
     if (restricted && user) {
       const own = (loan.createdByEmail && loan.createdByEmail.toLowerCase() === String(user.email).toLowerCase()) || (loan.loanOfficerName === user.username);
@@ -681,6 +681,10 @@ exports.setLoanStatus = async (req, res) => {
     const allowed = ['pending', 'active', 'paid', 'defaulted'];
     const { status } = req.body;
     if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
+    // Require authenticated identity for status changes
+    if (!req.userDoc) {
+      return res.status(401).json({ error: 'Authentication required. Please include x-user-email header.' });
+    }
     // Access control: must own loan for restricted roles
     const current = await Loan.findById(req.params.id);
     if (!current) return res.status(404).json({ error: 'Loan not found' });
@@ -693,7 +697,7 @@ exports.setLoanStatus = async (req, res) => {
     }
     // Only admin/branch head can approve (activate) loans
     if (status === 'active') {
-      const roleForApprove = (user && user.role ? String(user.role).toLowerCase() : '');
+      const roleForApprove = (user && user.role ? String(user.role).trim().toLowerCase() : '');
       const approvers = ['admin', 'branch head'];
       if (!approvers.includes(roleForApprove)) {
         return res.status(403).json({ error: 'Only admins and branch heads can approve loans' });
@@ -884,7 +888,7 @@ exports.getLoansByGroup = async (req, res) => {
       const g = await Group.findById(groupId);
       if (!g) return res.status(404).json({ error: 'Group not found' });
       const user = req.userDoc;
-      const role = (user && user.role ? String(user.role).toLowerCase() : '');
+      const role = (user && user.role ? String(user.role).trim().toLowerCase() : '');
       const restricted = role === 'loan officer' || role === 'field agent';
       if (restricted && user) {
         if (!g.createdByEmail || g.createdByEmail.toLowerCase() !== String(user.email).toLowerCase()) {

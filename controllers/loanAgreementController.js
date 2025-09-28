@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Loan = require('../models/Loan');
 const LoanAgreement = require('../models/LoanAgreement');
+const Client = require('../models/Client');
 
 function canAccessLoan(user, loan) {
   const role = (user && user.role ? String(user.role).toLowerCase() : '');
@@ -26,6 +27,15 @@ function mapAgreementFromLoan(loan) {
 
   const presentAddress = creditor.homeAddress || creditor.presentAddress || '';
 
+  // Compute interest amount (total - principal) if available
+  const principal = Number(loan.loanAmount || 0);
+  let interestAmt = undefined;
+  if (loan.totalAmountToBePaid != null) {
+    interestAmt = Number((Number(loan.totalAmountToBePaid || 0) - principal).toFixed(2));
+  } else if (loan.interestRate != null) {
+    interestAmt = Number((principal * (Number(loan.interestRate || 0) / 100)).toFixed(2));
+  }
+
   return {
     loan: loan._id,
     branchName: loan.branchName,
@@ -38,7 +48,8 @@ function mapAgreementFromLoan(loan) {
     cashAmountCredited: loan.cashAmountCredited,
     amountInWords: loan.loanAmountInWords,
     purposeOfLoan: loan.purposeOfLoan,
-    interestDeductedOrAdded: loan.interestDeductedOrAdded,
+    interestDeductedOrAdded: loan.interestDeductedOrAdded != null ? loan.interestDeductedOrAdded : interestAmt,
+    interestAdjustmentType: 'added',
     totalAmountToBePaid: loan.totalAmountToBePaid,
 
     creditorInfo: {
@@ -61,6 +72,7 @@ function mapAgreementFromLoan(loan) {
     },
 
     collateralItemsText: loan.collateralItemsText,
+    collateralItemsLocation: (loan.collateralDetails && loan.collateralDetails.propertyLocation) || undefined,
 
     bondsperson1: {
       name: bond1.name,
@@ -125,7 +137,6 @@ exports.getAgreementForLoan = async (req, res) => {
 exports.initAgreementForLoan = async (req, res) => {
   try {
     const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid loan id' });
     const loan = await Loan.findById(id);
     if (!loan) return res.status(404).json({ error: 'Loan not found' });
     if (!canAccessLoan(req.userDoc, loan)) return res.status(403).json({ error: 'Forbidden' });
@@ -134,13 +145,22 @@ exports.initAgreementForLoan = async (req, res) => {
     if (existing) return res.json(existing);
 
     const payload = mapAgreementFromLoan(loan);
+    // Prefill name of creditor from linked client when available
+    try {
+      if (!payload.creditorInfo) payload.creditorInfo = {};
+      if (!payload.creditorInfo.nameOfCreditor && loan.client) {
+        const client = await Client.findById(loan.client).select('memberName');
+        if (client && client.memberName) {
+          payload.creditorInfo.nameOfCreditor = client.memberName;
+        }
+      }
+    } catch (_) {}
     const created = await LoanAgreement.create(payload);
     res.status(201).json(created);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 };
-
 exports.updateAgreementForLoan = async (req, res) => {
   try {
     const { id } = req.params;
@@ -150,8 +170,8 @@ exports.updateAgreementForLoan = async (req, res) => {
     if (!canAccessLoan(req.userDoc, loan)) return res.status(403).json({ error: 'Forbidden' });
 
     const allowedFields = [
-      'formNumber', 'dateOfCredit', 'cashAmountCredited', 'amountInWords', 'purposeOfLoan', 'interestDeductedOrAdded', 'totalAmountToBePaid',
-      'creditorInfo', 'relatedContacts', 'collateralItemsText', 'bondsperson1', 'bondsperson2', 'signatureSection', 'witnesses', 'attestedBy', 'approvedBy'
+      'formNumber', 'dateOfCredit', 'cashAmountCredited', 'amountInWords', 'purposeOfLoan', 'interestDeductedOrAdded', 'interestAdjustmentType', 'totalAmountToBePaid',
+      'creditorInfo', 'relatedContacts', 'collateralItemsText', 'collateralItemsLocation', 'bondsperson1', 'bondsperson2', 'signatureSection', 'witnesses', 'attestedBy', 'approvedBy'
     ];
     const update = {};
     for (const key of allowedFields) {

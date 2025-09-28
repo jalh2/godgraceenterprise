@@ -21,6 +21,8 @@ const userSchema = new mongoose.Schema(
         'staff',
       ],
       default: 'staff',
+      trim: true,
+      lowercase: true,
     },
     branchName: { type: String, required: true },
     branchCode: { type: String, required: true },

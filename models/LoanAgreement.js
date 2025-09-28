@@ -71,6 +71,7 @@ const loanAgreementSchema = new mongoose.Schema(
     amountInWords: { type: String }, // Amount in Words
     purposeOfLoan: { type: String }, // Purpose of the loan
     interestDeductedOrAdded: { type: Number },
+    interestAdjustmentType: { type: String, enum: ['added', 'deducted'] },
     totalAmountToBePaid: { type: Number },
 
     // Creditor's Personal Information
@@ -81,6 +82,7 @@ const loanAgreementSchema = new mongoose.Schema(
 
     // Collateral (free-text list per provided spec)
     collateralItemsText: { type: String },
+    collateralItemsLocation: { type: String },
 
     // Page 2: Bondsperson & Witness Information
     bondsperson1: bondspersonSchema,

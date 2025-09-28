@@ -9,6 +9,7 @@ const SavingsAccount = require('../models/Savings');
 // Helper to sanitize and validate incoming loan payload
 function sanitizeLoanPayload(payload) {
   const clean = { ...payload };
+  const isBlank = (v) => v == null || (typeof v === 'string' && v.trim() === '');
 
   // Normalize optional relational fields: remove if empty string/null/undefined
   if (Object.prototype.hasOwnProperty.call(clean, 'group')) {
@@ -49,6 +50,28 @@ function sanitizeLoanPayload(payload) {
   } else if (clean.loanType === 'individual') {
     // individual loans may be optionally associated with a group (for group member loans)
     if (Object.prototype.hasOwnProperty.call(clean, 'clients')) delete clean.clients;
+  }
+
+  // Drop empty-string enum fields to avoid enum validation errors
+  if (Object.prototype.hasOwnProperty.call(clean, 'maritalStatus') && isBlank(clean.maritalStatus)) {
+    delete clean.maritalStatus;
+  }
+  if (clean.creditorInfo) {
+    if (Object.prototype.hasOwnProperty.call(clean.creditorInfo, 'sex') && isBlank(clean.creditorInfo.sex)) {
+      delete clean.creditorInfo.sex;
+    }
+    // Remove empty nested object to avoid storing empty docs
+    if (Object.keys(clean.creditorInfo).every((k) => isBlank(clean.creditorInfo[k]))) {
+      delete clean.creditorInfo;
+    }
+  }
+  if (Array.isArray(clean.guarantors)) {
+    clean.guarantors = clean.guarantors.map((g) => {
+      if (!g) return g;
+      const gg = { ...g };
+      if (Object.prototype.hasOwnProperty.call(gg, 'sex') && isBlank(gg.sex)) delete gg.sex;
+      return gg;
+    });
   }
 
   return { clean };

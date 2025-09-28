@@ -282,9 +282,11 @@ loanSchema.pre('validate', async function (next) {
   if (this.loanType === 'express') {
     this.loanDurationNumber = 1;
     this.loanDurationUnit = 'months';
-    if (!this.collateralItem || !this.collateralItem.itemName) {
-      this.invalidate('collateralItem.itemName', 'Collateral itemName is required for express loans');
-    }
+    // No longer require collateralItem; express form now captures collateralDetails
+    // Optionally, ensure at least some collateral info is present (soft check only)
+    // if (!this.collateralDetails || !this.collateralDetails.propertyGiven) {
+    //   this.invalidate('collateralDetails.propertyGiven', 'Property given as collateral is required for express loans');
+    // }
   }
 
   if (this.loanType === 'individual') {

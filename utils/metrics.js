@@ -61,7 +61,12 @@ function computeInterestForLoan(loan) {
 
 function collateralValueFromLoan(loan) {
   const cash = Number(loan.collateralCashAmount || 0);
-  const item = Number((loan.collateralItem && loan.collateralItem.estimatedValue) || 0);
+  // Support both legacy express collateralItem and new collateralDetails.propertyValue
+  const item = Number(
+    (loan.collateralItem && loan.collateralItem.estimatedValue) ||
+    (loan.collateralDetails && loan.collateralDetails.propertyValue) ||
+    0
+  );
   const total = Number((cash + item).toFixed(2));
   return isNaN(total) ? 0 : total;
 }

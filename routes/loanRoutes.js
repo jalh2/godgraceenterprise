@@ -11,6 +11,7 @@ const {
   addCollectionsBatch,
   setLoanStatus,
   getLoansByGroup,
+  searchLoansByName,
 } = require('../controllers/loanController');
 const { getDistributionsByLoan, createDistribution } = require('../controllers/distributionController');
 const { getAgreementForLoan, initAgreementForLoan, updateAgreementForLoan } = require('../controllers/loanAgreementController');
@@ -20,6 +21,8 @@ router.post('/', createLoan);
 router.get('/', getAllLoans);
 // Daily/weekly due collections listing
 router.get('/due-collections', getDueCollections);
+// Search by client or group name
+router.get('/search', searchLoansByName);
 // Group-scoped listing (primarily individual loans for group members)
 router.get('/by-group/:groupId', getLoansByGroup);
 router.get('/:id', getLoanById);

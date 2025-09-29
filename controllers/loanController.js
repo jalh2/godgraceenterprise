@@ -3,6 +3,7 @@ const LoanAgreement = require('../models/LoanAgreement');
 const { mapAgreementFromLoan } = require('./loanAgreementController');
 const mongoose = require('mongoose');
 const Group = require('../models/Group');
+const Client = require('../models/Client');
 const { recordMany, computeInterestForLoan, collateralValueFromLoan } = require('../utils/metrics');
 const SavingsAccount = require('../models/Savings');
 
@@ -928,6 +929,85 @@ exports.getLoansByGroup = async (req, res) => {
       .sort({ createdAt: -1 });
     console.log('[Loans:getByGroup]', { groupId, filter, count: loans.length });
     res.json(loans);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Search loans by individual (client) name or group name
+// GET /api/loans/search?q=<name>&branchCode=<code>&branchName=<name>&type=individual|group
+// Returns: { q, clients, groups, individualLoans, groupMemberLoans }
+exports.searchLoansByName = async (req, res) => {
+  try {
+    const raw = String(req.query.q || '').trim();
+    if (!raw) return res.status(400).json({ error: 'q is required' });
+
+    const escaped = raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escaped, 'i');
+
+    const { branchCode, branchName, type } = req.query;
+
+    // Build base loan filter (branch + role guard)
+    const loanFilter = {};
+    if (branchCode) loanFilter.branchCode = branchCode;
+    if (branchName) loanFilter.branchName = branchName;
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).trim().toLowerCase() : '');
+    const restricted = role === 'loan officer' || role === 'field agent';
+    if (restricted && user) {
+      loanFilter.$or = [
+        { createdByEmail: user.email },
+        { loanOfficerName: user.username },
+      ];
+      if (!branchCode) loanFilter.branchCode = user.branchCode;
+    }
+
+    // Clients by name
+    const clientFilter = { memberName: regex };
+    if (branchCode) clientFilter.branchCode = branchCode;
+    if (branchName) clientFilter.branchName = branchName;
+    if (restricted && user) {
+      clientFilter.createdByEmail = user.email;
+      if (!branchCode) clientFilter.branchCode = user.branchCode;
+    }
+    const clients = await Client.find(clientFilter).select('memberName branchName branchCode');
+    const clientIds = clients.map(c => c._id);
+
+    // Groups by name
+    const groupFilter = { groupName: regex };
+    if (branchCode) groupFilter.branchCode = branchCode;
+    if (branchName) groupFilter.branchName = branchName;
+    if (restricted && user) {
+      groupFilter.createdByEmail = user.email;
+      if (!branchCode) groupFilter.branchCode = user.branchCode;
+    }
+    const groups = await Group.find(groupFilter).select('groupName branchName branchCode');
+    const groupIds = groups.map(g => g._id);
+
+    let individualLoans = [];
+    let groupMemberLoans = [];
+
+    if (!type || String(type).toLowerCase() === 'individual') {
+      if (clientIds.length) {
+        individualLoans = await Loan.find({
+          ...loanFilter,
+          loanType: { $ne: 'group' },
+          client: { $in: clientIds },
+        }).populate('client group').sort({ createdAt: -1 });
+      }
+    }
+
+    if (!type || String(type).toLowerCase() === 'group') {
+      if (groupIds.length) {
+        groupMemberLoans = await Loan.find({
+          ...loanFilter,
+          loanType: 'individual',
+          group: { $in: groupIds },
+        }).populate('client group').sort({ createdAt: -1 });
+      }
+    }
+
+    res.json({ q: raw, clients, groups, individualLoans, groupMemberLoans });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

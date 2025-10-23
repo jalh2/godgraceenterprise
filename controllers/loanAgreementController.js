@@ -27,6 +27,9 @@ function mapAgreementFromLoan(loan) {
 
   const presentAddress = creditor.homeAddress || creditor.presentAddress || '';
 
+  // Prefer loan.dateOfCredit when present; otherwise fall back to disbursementDate
+  const mappedDateOfCredit = loan.dateOfCredit || loan.disbursementDate || undefined;
+
   // Compute interest amount (total - principal) if available
   const principal = Number(loan.loanAmount || 0);
   let interestAmt = undefined;
@@ -36,6 +39,11 @@ function mapAgreementFromLoan(loan) {
     interestAmt = Number((principal * (Number(loan.interestRate || 0) / 100)).toFixed(2));
   }
 
+  // Prefer free-text collateralItemsText; otherwise for express/modern forms, use collateralDetails.propertyGiven
+  const mappedCollateralText = (loan.collateralItemsText != null && loan.collateralItemsText !== '')
+    ? loan.collateralItemsText
+    : ((loan.collateralDetails && loan.collateralDetails.propertyGiven) || undefined);
+
   return {
     loan: loan._id,
     branchName: loan.branchName,
@@ -44,7 +52,7 @@ function mapAgreementFromLoan(loan) {
     currency: loan.currency,
 
     formNumber: loan.formNumber,
-    dateOfCredit: loan.dateOfCredit,
+    dateOfCredit: mappedDateOfCredit,
     cashAmountCredited: loan.cashAmountCredited,
     amountInWords: loan.loanAmountInWords,
     purposeOfLoan: loan.purposeOfLoan,
@@ -56,7 +64,7 @@ function mapAgreementFromLoan(loan) {
       nameOfCreditor: creditor.nameOfCreditor,
       sex: creditor.sex,
       contacts: creditor.contacts,
-      typeOfBusinessOrJob: creditor.typeOfBusinessOrJob,
+      typeOfBusinessOrJob: creditor.typeOfBusinessOrJob || loan.businessType,
       presentAddress: presentAddress,
       businessAddress: creditor.businessAddress,
       dateOfBirth: creditor.dateOfBirth,
@@ -71,7 +79,7 @@ function mapAgreementFromLoan(loan) {
       familyPartnerContacts: related.familyPartnerContacts,
     },
 
-    collateralItemsText: loan.collateralItemsText,
+    collateralItemsText: mappedCollateralText,
     collateralItemsLocation: (loan.collateralDetails && loan.collateralDetails.propertyLocation) || undefined,
 
     bondsperson1: {
@@ -98,13 +106,13 @@ function mapAgreementFromLoan(loan) {
         name: sig?.bondsperson1?.name,
         signature: sig?.bondsperson1?.signature,
         signatureDate: sig?.bondsperson1?.signatureDate,
-        contacts: sig?.bondsperson1?.contacts,
+        contacts: sig?.bondsperson1?.contacts || bond1.cellphoneNumber,
       },
       bondsperson2: {
         name: sig?.bondsperson2?.name,
         signature: sig?.bondsperson2?.signature,
         signatureDate: sig?.bondsperson2?.signatureDate,
-        contacts: sig?.bondsperson2?.contacts,
+        contacts: sig?.bondsperson2?.contacts || bond2.cellphoneNumber,
       },
     },
 

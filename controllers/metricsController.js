@@ -1,5 +1,6 @@
 const Metric = require('../models/Metric');
 const { recordMetric, recordMany, normalizeDay } = require('../utils/metrics');
+const { recalculateAllMetrics } = require('../utils/recalcMetrics');
 
 function parseMetricsParam(q) {
   if (!q) return undefined;
@@ -268,3 +269,21 @@ exports.getProfit = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+exports.recalculateMetrics = async (req, res) => {
+  try {
+    const user = req.userDoc;
+    const role = (user && user.role ? String(user.role).trim().toLowerCase() : '');
+    const allowed = ['admin', 'branch head', 'ceo', 'manager'];
+    if (!allowed.includes(role)) {
+       return res.status(403).json({ error: 'Forbidden: Only admins/managers can recalculate metrics' });
+    }
+
+    const result = await recalculateAllMetrics();
+    res.json({ message: 'Metrics recalculated successfully', ...result });
+  } catch (err) {
+    console.error('Recalculate Metrics Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+

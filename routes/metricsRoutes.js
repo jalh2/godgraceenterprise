@@ -1,9 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const { createMetrics, getSummary, getProfit } = require('../controllers/metricsController');
+const { createMetrics, getSummary, getProfit, recalculateMetrics } = require('../controllers/metricsController');
 
 // Create metrics (single or batch via { entries: [] })
 router.post('/', createMetrics);
+
+// Recalculate all metrics from scratch (Admin only)
+router.post('/recalculate', recalculateMetrics);
 
 // Get aggregated metrics summary
 // Query params:

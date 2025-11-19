@@ -434,6 +434,13 @@ exports.deleteLoan = async (req, res) => {
     if (loan.loanType === 'individual' && loan.group) {
       await recalcGroupLoanTotal(loan.group);
     }
+    // Clean up metrics associated with this loan
+    try {
+      const Metric = require('../models/Metric');
+      await Metric.deleteMany({ loan: loan._id });
+    } catch (mErr) {
+      console.error('Failed to delete metrics for loan:', mErr);
+    }
     res.json({ message: 'Loan deleted' });
   } catch (err) {
     res.status(500).json({ error: err.message });

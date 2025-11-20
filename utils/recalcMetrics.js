@@ -86,6 +86,8 @@ async function recalculateAllMetrics() {
 
       // Disbursement & Waiting (for non-group loans)
       if (loan.loanType !== 'group') {
+        const principal = Number(loan.loanAmount || 0);
+        const totalRepayable = Number((principal + Number(interest || 0)).toFixed(2));
         eventsBuffer.push({
           ...base,
           metric: 'loanAmountDistributed',
@@ -96,7 +98,7 @@ async function recalculateAllMetrics() {
         eventsBuffer.push({
           ...base,
           metric: 'waitingToBeCollected',
-          value: Number(loan.loanAmount || 0),
+          value: totalRepayable,
           date: activationDate,
           extra: { recalc: true, type: 'activation' }
         });
@@ -180,7 +182,16 @@ async function recalculateAllMetrics() {
       extra: { recalc: true, type: 'distribution', distribution: d._id },
     };
     eventsBuffer.push({ ...base, metric: 'loanAmountDistributed', value: amount });
-    eventsBuffer.push({ ...base, metric: 'waitingToBeCollected', value: amount });
+
+    // For group loans, waiting should reflect principal plus interest on the distributed amount.
+    let waitingValue = amount;
+    if (loan && loan.loanType === 'group') {
+      const rate = Number(loan.interestRate || 0);
+      const interestShare = Number(((amount * rate) / 100).toFixed(2));
+      waitingValue = Number((amount + interestShare).toFixed(2));
+    }
+    eventsBuffer.push({ ...base, metric: 'waitingToBeCollected', value: waitingValue });
+
     if (eventsBuffer.length >= BATCH_SIZE) {
       await flushBuffer();
     }

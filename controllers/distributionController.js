@@ -34,7 +34,7 @@ exports.createDistribution = async (req, res) => {
     }
 
     // Load loan and validate
-    const loan = await Loan.findById(id).select('group currency status branchName branchCode client loanOfficerName');
+    const loan = await Loan.findById(id).select('group currency status branchName branchCode client loanOfficerName loanType interestRate');
     if (!loan) return res.status(404).json({ error: 'Loan not found' });
     if (loan.status !== 'active') {
       return res.status(400).json({ error: 'Cannot record distribution for a loan that is not active' });
@@ -128,9 +128,16 @@ exports.createDistribution = async (req, res) => {
           client: loan.client,
           extra: { distribution: d._id },
         };
+        const amount = Number(d.amount || 0);
+        let waitingValue = amount;
+        if (loan.loanType === 'group') {
+          const rate = Number(loan.interestRate || 0);
+          const interestShare = Number(((amount * rate) / 100).toFixed(2));
+          waitingValue = Number((amount + interestShare).toFixed(2));
+        }
         return [
-          { ...base, metric: 'loanAmountDistributed', value: Number(d.amount || 0) },
-          { ...base, metric: 'waitingToBeCollected', value: Number(d.amount || 0) },
+          { ...base, metric: 'loanAmountDistributed', value: amount },
+          { ...base, metric: 'waitingToBeCollected', value: waitingValue },
         ];
       });
       if (events.length) await recordMany(events);
@@ -251,9 +258,15 @@ exports.updateDistribution = async (req, res) => {
           client: updated.member,
           extra: { distribution: updated._id, update: true },
         };
+        let waitingDelta = delta;
+        if (loan && loan.loanType === 'group') {
+          const rate = Number(loan.interestRate || 0);
+          const interestDelta = Number(((delta * rate) / 100).toFixed(2));
+          waitingDelta = Number((delta + interestDelta).toFixed(2));
+        }
         await recordMany([
           { ...base, metric: 'loanAmountDistributed', value: delta },
-          { ...base, metric: 'waitingToBeCollected', value: delta },
+          { ...base, metric: 'waitingToBeCollected', value: waitingDelta },
         ]);
       }
     } catch (mErr) {
@@ -298,9 +311,15 @@ exports.deleteDistribution = async (req, res) => {
         extra: { distribution: deleted._id, delete: true },
       };
       const value = -Number(deleted.amount || 0);
+      let waitingValue = value;
+      if (loan && loan.loanType === 'group') {
+        const rate = Number(loan.interestRate || 0);
+        const interestValue = Number(((value * rate) / 100).toFixed(2));
+        waitingValue = Number((value + interestValue).toFixed(2));
+      }
       await recordMany([
         { ...base, metric: 'loanAmountDistributed', value },
-        { ...base, metric: 'waitingToBeCollected', value },
+        { ...base, metric: 'waitingToBeCollected', value: waitingValue },
       ]);
     } catch (mErr) {
       console.error('[Metrics:deleteDistribution] failed:', mErr.message);

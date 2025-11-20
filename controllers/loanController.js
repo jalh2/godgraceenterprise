@@ -793,6 +793,8 @@ exports.setLoanStatus = async (req, res) => {
         }
         // For non-group loans (express/individual), record disbursement and initial waiting balance
         if (loan.loanType !== 'group') {
+          const principal = Number(loan.loanAmount || 0);
+          const totalRepayable = Number((principal + Number(interest || 0)).toFixed(2));
           const events = [
             {
               metric: 'loanAmountDistributed',
@@ -809,7 +811,7 @@ exports.setLoanStatus = async (req, res) => {
             },
             {
               metric: 'waitingToBeCollected',
-              value: Number(loan.loanAmount || 0) || 0,
+              value: totalRepayable,
               date: loan.disbursementDate || loan.updatedAt || new Date(),
               branchName: loan.branchName,
               branchCode: loan.branchCode,

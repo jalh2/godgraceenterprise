@@ -798,7 +798,9 @@ exports.setLoanStatus = async (req, res) => {
           const events = [
             {
               metric: 'loanAmountDistributed',
-              value: Number(loan.netDisbursedAmount || loan.loanAmount || 0),
+              // Use the full approved loan amount (gross), not netDisbursedAmount,
+              // so processing fee is not deducted from the distributed metric.
+              value: principal,
               date: loan.disbursementDate || loan.updatedAt || new Date(),
               branchName: loan.branchName,
               branchCode: loan.branchCode,

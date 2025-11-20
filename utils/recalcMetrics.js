@@ -91,7 +91,9 @@ async function recalculateAllMetrics() {
         eventsBuffer.push({
           ...base,
           metric: 'loanAmountDistributed',
-          value: Number(loan.netDisbursedAmount || loan.loanAmount || 0),
+          // Use the full approved loan amount (gross). Do not deduct processing
+          // fee or other charges when computing the distributed metric.
+          value: principal,
           date: activationDate,
           extra: { recalc: true, type: 'activation' }
         });

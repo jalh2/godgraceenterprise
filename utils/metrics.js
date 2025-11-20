@@ -54,6 +54,14 @@ async function recordMany(events) {
 function computeInterestForLoan(loan) {
   // Basic flat interest assumption: interestRate is a percent over the full loan amount for the term
   const amt = Number(loan.loanAmount || 0);
+
+  // Prefer explicit totalAmountToBePaid when available (handles legacy data and manual overrides)
+  const total = Number(loan.totalAmountToBePaid || 0);
+  if (Number.isFinite(total) && total > amt && amt > 0) {
+    const interestFromTotal = Number((total - amt).toFixed(2));
+    if (!isNaN(interestFromTotal)) return interestFromTotal;
+  }
+
   const rate = Number(loan.interestRate || 0);
   const interest = Number(((amt * rate) / 100).toFixed(2));
   return isNaN(interest) ? 0 : interest;

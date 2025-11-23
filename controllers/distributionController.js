@@ -96,6 +96,9 @@ exports.createDistribution = async (req, res) => {
 
     // If caller supplied a collectionStartDate or a scheduleStartRule, update the loan's collectionStartDate
     try {
+      const loanUpdate = {};
+      let doUpdate = false;
+
       let desiredStart = null;
       const first = Array.isArray(created) ? (created[0] || null) : created;
       if (req.body && req.body.collectionStartDate) {
@@ -107,10 +110,29 @@ exports.createDistribution = async (req, res) => {
         if (computed) desiredStart = computed;
       }
       if (desiredStart) {
-        await Loan.findByIdAndUpdate(id, { collectionStartDate: desiredStart }, { new: true });
+        loanUpdate.collectionStartDate = desiredStart;
+        doUpdate = true;
+      }
+
+      // Handle Payback Timeframe (Duration) update from distribution
+      if (req.body.loanDurationNumber) {
+        loanUpdate.loanDurationNumber = req.body.loanDurationNumber;
+        doUpdate = true;
+        // Unset endingDate to force dynamic calculation in collections based on new duration
+        loanUpdate.$unset = { endingDate: 1 };
+      }
+      if (req.body.loanDurationUnit) {
+        loanUpdate.loanDurationUnit = req.body.loanDurationUnit;
+        doUpdate = true;
+        if (!loanUpdate.$unset) loanUpdate.$unset = {};
+        loanUpdate.$unset.endingDate = 1;
+      }
+
+      if (doUpdate) {
+        await Loan.findByIdAndUpdate(id, loanUpdate, { new: true });
       }
     } catch (sErr) {
-      console.error('[Distribution:create] failed to set collectionStartDate:', sErr.message);
+      console.error('[Distribution:create] failed to update loan:', sErr.message);
     }
 
     // Record metrics for all created entries
@@ -220,8 +242,11 @@ exports.updateDistribution = async (req, res) => {
     });
     if (!updated) return res.status(404).json({ error: 'Distribution not found' });
 
-    // If provided, update the loan's collectionStartDate as well
+    // If provided, update the loan's collectionStartDate and/or duration as well
     try {
+      const loanUpdate = {};
+      let doUpdate = false;
+
       let desiredStart = null;
       if (req.body && req.body.collectionStartDate) {
         const dt = new Date(req.body.collectionStartDate);
@@ -232,10 +257,28 @@ exports.updateDistribution = async (req, res) => {
         if (computed) desiredStart = computed;
       }
       if (desiredStart) {
-        await Loan.findByIdAndUpdate(updated.loan || (before && before.loan), { collectionStartDate: desiredStart }, { new: true });
+        loanUpdate.collectionStartDate = desiredStart;
+        doUpdate = true;
+      }
+
+      // Handle Payback Timeframe (Duration) update
+      if (req.body.loanDurationNumber) {
+        loanUpdate.loanDurationNumber = req.body.loanDurationNumber;
+        doUpdate = true;
+        loanUpdate.$unset = { endingDate: 1 };
+      }
+      if (req.body.loanDurationUnit) {
+        loanUpdate.loanDurationUnit = req.body.loanDurationUnit;
+        doUpdate = true;
+        if (!loanUpdate.$unset) loanUpdate.$unset = {};
+        loanUpdate.$unset.endingDate = 1;
+      }
+
+      if (doUpdate) {
+        await Loan.findByIdAndUpdate(updated.loan || (before && before.loan), loanUpdate, { new: true });
       }
     } catch (sErr) {
-      console.error('[Distribution:update] failed to set collectionStartDate:', sErr.message);
+      console.error('[Distribution:update] failed to update loan:', sErr.message);
     }
 
     // Metrics: compute delta in amount and emit compensating events
